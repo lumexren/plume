@@ -142,6 +142,7 @@ pub fn generateIntrospectionXml(allocator: Allocator, comptime T: type, interfac
     return try out.toOwnedSliceSentinel(allocator, 0);
 }
 
+/// Computes the D-Bus type signature string for a given type (internal helper).
 fn getSignature(allocator: Allocator, comptime T: type) ![:0]const u8 {
     const len = Value.reprLength(T);
     var sig_buf: [256]u8 = undefined;

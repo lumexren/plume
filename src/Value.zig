@@ -29,6 +29,7 @@ const mem = std.mem;
 const math = std.math;
 const Allocator = mem.Allocator;
 
+/// Returns the D-Bus alignment requirement for a type.
 pub fn dbusAlignOf(comptime T: type) usize {
     if (T == GStr or T == GPath) return 4; // 's','o'
     if (T == GSig) return 1; // 'g'
@@ -98,6 +99,7 @@ pub const GUFd = struct {
     }
 };
 
+/// Checks whether a type implements the D-Bus serialization interface (.ser method).
 pub fn doesImplementSer(comptime T: type) bool {
     if (meta.hasMethod(T, "ser")) {
         const Args = meta.ArgsTuple(@TypeOf(T.ser));
@@ -108,6 +110,7 @@ pub fn doesImplementSer(comptime T: type) bool {
     return false;
 }
 
+/// Returns the length of the D-Bus type signature for a given type.
 pub fn reprLength(comptime T: type) comptime_int {
     if (T == void) return 0;
     const info = @typeInfo(T);
@@ -144,6 +147,7 @@ pub fn reprLength(comptime T: type) comptime_int {
     }
 }
 
+/// Writes the D-Bus type signature representation into the provided buffer.
 pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[len]u8) void {
     const info = @typeInfo(T);
     switch (info) {
@@ -466,6 +470,7 @@ pub fn Struct(comptime S: type) type {
     };
 }
 
+/// Creates a basic numeric or boolean D-Bus value wrapper (internal helper).
 fn BasicType(comptime T: type) type {
     const repr_len = reprLength(T);
     var repr_arr: [repr_len]u8 = @splat(0);
@@ -493,6 +498,7 @@ fn BasicType(comptime T: type) type {
     };
 }
 
+/// Creates a string-like D-Bus value wrapper for a given type code (internal helper).
 fn StringLike(r: u8) type {
     const repr_len = 1;
     return struct {

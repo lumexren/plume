@@ -36,6 +36,8 @@ const meta = std.meta;
 
 const common = @import("common.zig");
 
+/// Returns a dispatch function for a type T that handles incoming D-Bus method calls,
+/// property access (Get/Set/GetAll), and introspection requests.
 pub fn getDispatchFn(comptime T: type) fn (*const common.InterfaceWrapper, *Connection, Message) anyerror!void {
     return struct {
         fn dispatch(w: *const common.InterfaceWrapper, connection: *Connection, message: Message) anyerror!void {

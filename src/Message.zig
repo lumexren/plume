@@ -103,6 +103,7 @@ pub const HeaderFieldValueTag = enum {
     UnixFds,
 };
 
+/// A union representing the value of a D-Bus message header field.
 pub const HeaderFieldValue = union(HeaderFieldValueTag) {
     Path: [:0]const u8,
     Interface: [:0]const u8,
@@ -137,6 +138,7 @@ pub const HeaderFieldValue = union(HeaderFieldValueTag) {
     }
 };
 
+/// The type code for a D-Bus message header field.
 pub const HeaderFieldCode = enum(u8) {
     Invalid = 0x0,
     Path = 0x1,
@@ -150,6 +152,7 @@ pub const HeaderFieldCode = enum(u8) {
     UnixFds = 0x9,
 };
 
+/// A D-Bus message header field consisting of a code and a value.
 pub const HeaderField = struct {
     code: HeaderFieldCode,
     value: HeaderFieldValue,
@@ -222,6 +225,7 @@ pub const MessageType = enum(u8) {
     Signal = 4,
 };
 
+/// Errors that can occur when packing a D-Bus message header.
 pub const MessageHeaderError = error{ArrayTooLarge};
 
 /// Represents the header of a D-Bus message.
@@ -367,10 +371,7 @@ pub fn getErrorName(this: Message) ?[]const u8 {
     return null;
 }
 
-// Write the header-field VARIANT ("v") given our union value.
-// This function writes:
-//   1) the 'g' (signature of the contained type)
-//   2) the contained value aligned to its own D-Bus alignment
+// Serializes a HeaderFieldValue as a D-Bus VARIANT.
 fn serHeaderFieldVariant(hfv: HeaderFieldValue, w: *DBusWriter) !void {
     // We inline the variant emission: 'g' then aligned payload.
     switch (hfv) {

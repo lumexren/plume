@@ -27,6 +27,7 @@ const GPath = Value.GPath;
 const GSig = Value.GSig;
 const GUFd = Value.GUFd;
 
+/// Errors that can occur during D-Bus serialization.
 pub const SerializerError = error{
     I8CannotBeSerialized,
     UnSupportedIntWidth,
@@ -34,6 +35,9 @@ pub const SerializerError = error{
     UnSupportedTypeForNow,
 };
 
+/// Attempts to serialize a value of any type into a D-Bus writer.
+/// Supports types with a `ser` method, D-Bus wrapper types (GStr, GPath, GSig, GUFd),
+/// primitives (integers, floats, bools), arrays/slices, structs/tuples, and unions (variants).
 pub fn trySerialize(comptime T: type, data: T, w: *DBusWriter) !void {
     if (comptime Value.doesImplementSer(T)) {
         try data.ser(w);

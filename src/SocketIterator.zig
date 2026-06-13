@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
+/// Iterates over D-Bus socket addresses in a DBUS_SESSION_BUS_ADDRESS string,
+/// extracting the first valid unix:path= parameter.
 const SocketIterator = @This();
 
 const std = @import("std");
@@ -25,10 +27,12 @@ const TokenIterator = mem.TokenIterator;
 
 inner: TokenIterator(u8, .scalar),
 
+/// Initializes a SocketIterator from a D-Bus address string (e.g. DBUS_SESSION_BUS_ADDRESS).
 pub inline fn init(address: []const u8) SocketIterator {
     return .{ .inner = mem.tokenizeScalar(u8, address, ';') };
 }
 
+/// Returns the next unix socket path from the address string, or null if none remain.
 pub inline fn next(this: *SocketIterator) ?[]const u8 {
     const prefix = "unix:";
     const param = "path=";

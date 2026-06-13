@@ -32,6 +32,7 @@ pub const SignalHandler = struct {
     ctx: ?*anyopaque,
 };
 
+/// A wrapper around an interface implementation, used for dispatching incoming D-Bus method calls.
 pub const InterfaceWrapper = struct {
     instance: *anyopaque,
     dispatch: *const fn (wrapper: *const InterfaceWrapper, conn: *Connection, message: Message) anyerror!void,

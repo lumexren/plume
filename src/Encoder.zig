@@ -71,6 +71,7 @@ pub fn deinit(this: *Encoder) void {
     this.signature_list.deinit(this.allocator);
 }
 
+/// Appends a single value to the encoder's body and signature lists (internal helper).
 fn appendValue(this: *Encoder, value: anytype) !void {
     const T = @TypeOf(value);
     if (T == void) return;

@@ -23,28 +23,33 @@ const ascii = std.ascii;
 const mem = std.mem;
 const Allocator = mem.Allocator;
 
+/// Represents a D-Bus introspection argument (method or signal parameter).
 pub const Arg = struct {
     name: []const u8,
     type: []const u8,
     direction: []const u8 = "in",
 };
 
+/// Represents a D-Bus method with its name and arguments.
 pub const Method = struct {
     name: []const u8,
     args: []const Arg,
 };
 
+/// Represents a D-Bus signal with its name and arguments.
 pub const Signal = struct {
     name: []const u8,
     args: []const Arg,
 };
 
+/// Represents a D-Bus property with its name, type, and access mode.
 pub const Property = struct {
     name: []const u8,
     type: []const u8,
     access: []const u8,
 };
 
+/// Represents a D-Bus interface containing methods, signals, and properties.
 pub const Interface = struct {
     name: []const u8,
     methods: []const Method,
@@ -78,6 +83,7 @@ pub const Node = struct {
     }
 };
 
+/// Represents an XML tag with name, attributes, and closing/self-closing flags (internal helper).
 const Tag = struct {
     name: []const u8,
     attrs: []const u8,

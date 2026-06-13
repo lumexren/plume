@@ -149,6 +149,7 @@ pub fn init(io: Io, allocator: Allocator, map: *Map, bus_type: BusType) !Connect
     return connection;
 }
 
+/// Performs the D-Bus authentication handshake (SASL EXTERNAL) over the socket connection (internal).
 fn auth(this: *Connection) !void {
     var io_reader = &this.reader.interface;
 
@@ -185,6 +186,7 @@ fn auth(this: *Connection) !void {
     try io_writer.flush();
 }
 
+/// Sends the D-Bus Hello method call to obtain a unique bus name (internal).
 fn sayHello(this: *Connection) !void {
     const serial = this.serial_counter;
     defer this.serial_counter += 1;
@@ -656,6 +658,7 @@ pub fn waitMessage(this: *Connection) !Message {
     }
 }
 
+/// Reads and parses the next D-Bus message from the socket stream (internal).
 fn readNextMessage(this: *Connection) !Message {
     var header_buf: [16]u8 = undefined;
 
@@ -796,6 +799,7 @@ fn readNextMessage(this: *Connection) !Message {
     };
 }
 
+/// Prints raw data bytes for debugging purposes (internal).
 fn printData(data: []u8) void {
     for (data) |x| {
         if ((x >= 46 and x <= 57) or (x >= 65 and x <= 90) or (x >= 97 and x <= 122)) {
@@ -807,6 +811,7 @@ fn printData(data: []u8) void {
     debug.print("\n", .{});
 }
 
+/// Sends raw bytes over the socket and waits for a matching reply (internal).
 fn call(this: *Connection, data: []u8, serial: u32) !Message {
     var writer_buffer: [2048]u8 = undefined;
     var writer_stream = this.stream.writer(this.io, &writer_buffer);

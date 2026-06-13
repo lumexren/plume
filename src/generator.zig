@@ -150,6 +150,7 @@ pub fn generate(allocator: Allocator, node: introspection.Node, dest: ?[]const u
     return out.toOwnedSlice(allocator);
 }
 
+/// Maps a D-Bus type signature character to its corresponding Zig type (internal helper).
 fn dbusTypeToZig(sig: []const u8, is_param: bool) ![]const u8 {
     if (mem.eql(u8, sig, "s")) return "GStr";
     if (mem.eql(u8, sig, "u")) return "u32";

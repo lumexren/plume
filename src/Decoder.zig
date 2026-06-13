@@ -58,6 +58,7 @@ pub fn from(allocator: Allocator, message: Message) Decoder {
     return .init(allocator, message.body, signature, message.header.endianess);
 }
 
+/// Aligns the decoder position to the specified boundary (internal helper).
 fn alignTo(this: *Decoder, alignment: usize) void {
     const rem = this.pos % alignment;
     if (rem != 0) {
@@ -65,6 +66,7 @@ fn alignTo(this: *Decoder, alignment: usize) void {
     }
 }
 
+/// Validates the signature against the expected type and aligns the decoder position (internal helper).
 fn validateAndAlign(this: *Decoder, comptime T: type) !void {
     const sig_len = Value.reprLength(T);
     var expected_sig: [256]u8 = undefined;
@@ -102,6 +104,7 @@ pub fn decodeAlloc(this: *Decoder, comptime T: type) anyerror!T {
     return this.readValue(T, true);
 }
 
+/// Reads a value of type T from the body at the current position (internal helper).
 fn readValue(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerror!T {
     switch (@typeInfo(T)) {
         .int => |info| {
