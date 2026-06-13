@@ -73,14 +73,14 @@ fn validateAndAlign(this: *Decoder, comptime T: type) !void {
     Value.getRepr(T, sig_len, 0, expected_sig[0..sig_len]);
 
     if (this.sig_pos + sig_len > this.signature.len) return error.SignatureEnd;
-    
+
     const actual_sig = this.signature[this.sig_pos .. this.sig_pos + sig_len];
-    
+
     // Check for exact match, with a fallback allowing Object Paths ('o') to match Strings ('s')
     if (!mem.eql(u8, actual_sig, expected_sig[0..sig_len])) {
         const is_string_type = (T == Value.GStr or T == Value.GPath);
         const wire_is_path_or_str = (actual_sig[0] == 'o' or actual_sig[0] == 's');
-        
+
         if (!(is_string_type and wire_is_path_or_str and sig_len == 1)) {
             return error.SignatureMismatch;
         }
@@ -194,12 +194,7 @@ fn readValue(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerro
             errdefer {
                 if (deep_copy) {
                     for (list.items) |item| {
-                        if (Elem == Value.GStr or Elem == Value.GPath or Elem == Value.GSig) {
-                            this.allocator.free(item.s);
-                        } else switch (@typeInfo(Elem)) {
-                            .pointer => this.allocator.free(item),
-                            else => {},
-                        }
+                        freeValue(this.allocator, Elem, item);
                     }
                 }
                 list.deinit(this.allocator);
@@ -235,5 +230,24 @@ fn readValue(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerro
             return error.NoMatchingUnionField;
         },
         else => return error.UnsupportedType,
+    }
+}
+
+fn freeValue(allocator: Allocator, comptime T: type, value: T) void {
+    if (T == Value.GStr or T == Value.GPath or T == Value.GSig) {
+        allocator.free(value.s);
+    } else switch (@typeInfo(T)) {
+        .pointer => |info| {
+            if (info.size == .slice) {
+                for (value) |item| freeValue(allocator, info.child, item);
+                allocator.free(value);
+            }
+        },
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                freeValue(allocator, field.type, @field(value, field.name));
+            }
+        },
+        else => {},
     }
 }

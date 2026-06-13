@@ -157,7 +157,22 @@ const Scanner = struct {
 pub fn parse(allocator: Allocator, xml: []const u8) !Node {
     var scanner: Scanner = .{ .xml = xml };
     var interfaces: ArrayList(Interface) = try .initCapacity(allocator, 0);
+    errdefer {
+        for (interfaces.items) |iface| {
+            allocator.free(iface.methods);
+            allocator.free(iface.signals);
+            allocator.free(iface.properties);
+        }
+        interfaces.deinit(allocator);
+    }
+
     var children: ArrayList(Node) = try .initCapacity(allocator, 0);
+    errdefer {
+        for (children.items) |child| {
+            child.deinit(allocator);
+        }
+        children.deinit(allocator);
+    }
 
     while (scanner.nextTag()) |tag| {
         if (tag.is_closing) continue;
@@ -296,3 +311,4 @@ fn getAttr(attrs: []const u8, name: []const u8) ?[]const u8 {
     
     return null;
 }
+

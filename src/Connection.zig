@@ -256,7 +256,6 @@ pub fn requestName(this: *Connection, name: [:0]const u8) !void {
     const header: MessageHeader = .{
         .message_type = .MethodCall,
         .flags = flags,
-        .proto_version = 1,
         .body_length = @intCast(body_arr.items.len),
         .serial = serial,
         .header_fields = @constCast(&[_]HeaderField{
@@ -608,7 +607,9 @@ pub fn methodCall(self: *Connection, dest: [:0]const u8, path: [:0]const u8, ifa
 
 /// Frees resources associated with a message.
 pub fn freeMessage(this: *Connection, message: *Message) void {
-    this.allocator.free(message.body);
+    if (message.body.len > 0) {
+        this.allocator.free(message.body);
+    }
 
     for (message.header.header_fields) |f| {
         switch (f.value) {
