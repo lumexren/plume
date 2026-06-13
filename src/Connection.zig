@@ -339,6 +339,11 @@ pub fn registerObject(this: *Connection, comptime T: type, bus_name: [:0]const u
         .dispatch = dispatcher.getDispatchFn(T),
     };
 
+    errdefer {
+        this.allocator.destroy(instance_ptr);
+        this.allocator.free(intro_xml);
+    }
+
     try this.registered_interfaces.append(this.allocator, wrapper);
 
     return this.registered_interfaces.items.len - 1;
@@ -367,12 +372,16 @@ pub fn sendReply(this: *Connection, message: Message, enc: Encoder) !void {
     };
 
     if (dst) |d| {
-        try reply_fields.append(this.allocator, .{ .code = .Destination, .value = .{ .Destination = try this.allocator.dupeSentinel(u8, d, 0) } });
+        const dest_dup = try this.allocator.dupeSentinel(u8, d, 0);
+        errdefer this.allocator.free(dest_dup);
+        try reply_fields.append(this.allocator, .{ .code = .Destination, .value = .{ .Destination = dest_dup } });
     } else {
         debug.print("WARN: No Sender in request, reply has no Destination!\n", .{});
     }
 
-    try reply_fields.append(this.allocator, .{ .code = .Signature, .value = .{ .Signature = try this.allocator.dupeSentinel(u8, enc.signature(), 0) } });
+    const sig_dup = try this.allocator.dupeSentinel(u8, enc.signature(), 0);
+    errdefer this.allocator.free(sig_dup);
+    try reply_fields.append(this.allocator, .{ .code = .Signature, .value = .{ .Signature = sig_dup } });
 
     const reply_h: MessageHeader = .{
         .message_type = .MethodReturn,
@@ -762,6 +771,17 @@ fn readNextMessage(this: *Connection) !Message {
         }
     }
 
+    const final_fields = try fields_list.toOwnedSlice(this.allocator);
+    errdefer {
+        for (final_fields) |f| {
+            switch (f.value) {
+                .Path, .Interface, .Member, .ErrorName, .Destination, .Sender, .Signature => |s| this.allocator.free(s),
+                else => {},
+            }
+        }
+        this.allocator.free(final_fields);
+    }
+
     return .{
         .header = .{
             .endianess = endian,
@@ -770,7 +790,7 @@ fn readNextMessage(this: *Connection) !Message {
             .proto_version = version,
             .body_length = body_len,
             .serial = msg_serial,
-            .header_fields = try fields_list.toOwnedSlice(this.allocator),
+            .header_fields = final_fields,
         },
         .body = body,
     };

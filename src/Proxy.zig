@@ -48,11 +48,11 @@ pub fn init(connection: *Connection, destination: [:0]const u8, path: [:0]const 
 }
 
 /// Performs a low-level method call on a specific interface.
-pub fn rawCall(this: Proxy, iface: [:0]const u8, method: [:0]const u8, args: anytype) !MethodResult {
+pub fn rawCall(this: Proxy, interface: [:0]const u8, method: [:0]const u8, args: anytype) !MethodResult {
     var encoder: Encoder = try .encode(this.connection.allocator, args);
     defer encoder.deinit();
 
-    const reply = try this.connection.methodCall(this.destination, this.path, iface, method, encoder.signature(), encoder.body());
+    const reply = try this.connection.methodCall(this.destination, this.path, interface, method, encoder.signature(), encoder.body());
 
     if (reply.isError()) {
         const err_name = reply.getErrorName() orelse "UnknownError";
