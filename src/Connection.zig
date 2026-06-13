@@ -256,6 +256,7 @@ pub fn requestName(this: *Connection, name: [:0]const u8) !void {
     const header: MessageHeader = .{
         .message_type = .MethodCall,
         .flags = flags,
+        .proto_version = 1,
         .body_length = @intCast(body_arr.items.len),
         .serial = serial,
         .header_fields = @constCast(&[_]HeaderField{
