@@ -34,8 +34,7 @@ See [WIKI](WIKI.md)
 <sup>forked from <a href="https://github.com/luxluth/goose" target="_blank">luxluth/goose</a>
 
 *Star ⭐ this repo if you find it useful!*<br>
-*Support the project on [GitHub Sponsors](https://github.com/sponsors/erffy)* 💖<br>
-*Join our [Discord](https://discord.gg/tb8MvnnSfZ) for support and updates!*
+*Join our [Fluxer](https://fluxer.gg/xnTFlhV0) for support and updates!*
 
 This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](./LICENSE) for details.
 
