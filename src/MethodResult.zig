@@ -51,3 +51,10 @@ pub fn expect(this: *MethodResult, comptime T: type) !T {
     var dec = this.reader();
     return try dec.decode(T);
 }
+
+/// Decodes a single value of type T from the reply body and deep-copies any allocated memory
+/// using the connection's allocator.
+pub fn expectAlloc(this: *MethodResult, comptime T: type) !T {
+    var dec = this.reader();
+    return try dec.decodeAlloc(T);
+}

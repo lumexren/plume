@@ -6,56 +6,24 @@ const Connection = plume.Connection;
 const Decoder = plume.Decoder;
 const Encoder = plume.Encoder;
 const Proxy = plume.Proxy;
-const Value = plume.Value.Value;
+const Value = plume.Value;
 const GStr = plume.Value.GStr;
 const GPath = plume.Value.GPath;
+const GVariant = plume.Value.GVariant;
 
 const UPowerProxy = @import("batteries.zig").UPowerProxy;
+const PropertiesProxy = @import("batteries.zig").PropertiesProxy;
 
-fn printData(data: []const u8) void {
-    for (data) |x| {
-        if ((x >= 46 and x <= 57) or (x >= 65 and x <= 90) or (x >= 97 and x <= 122)) {
-            std.debug.print("{c}", .{x});
-        } else {
-            std.debug.print("\\{o}", .{x});
-        }
-    }
-    std.debug.print("\n", .{});
+fn onPropertiesChanged(ctx: *u32, args: struct { GStr, std.StringHashMap(GVariant), []const GStr }) void {
+    _ = args;
+    ctx.* += 1;
+    std.debug.print("SIGNAL [Callback]: PropertiesChanged triggered! Count: {d}\n", .{ctx.*});
 }
 
-// Signal handler callback
-// fn onPropertiesChanged(ctx: ?*anyopaque, msg: core.Message) void {
-//     const allocator: std.mem.Allocator = @as(*const std.mem.Allocator, @ptrCast(@alignCast(ctx orelse return))).*;
-//
-//     const PropValue = union(enum) {
-//         String: GStr,
-//         Bool: bool,
-//         Uint32: u32,
-//         Int32: i32,
-//         Double: f64,
-//     };
-//     const ChangedProp = struct { key: GStr, value: PropValue };
-//
-//     var decoder: Decoder = .from(allocator, msg);
-//
-//     const interface_name = decoder.decode(GStr) catch return;
-//     const changed_props = decoder.decode([]const ChangedProp) catch return;
-//     defer allocator.free(changed_props);
-//     const invalidated_props = decoder.decode([]const GStr) catch return;
-//     defer allocator.free(invalidated_props);
-//
-//     std.debug.print("SIGNAL [Callback]: PropertiesChanged on interface '{s}'\n", .{interface_name.s});
-//     for (changed_props) |prop| {
-//         std.debug.print(" - Changed: {s} = ", .{prop.key.s});
-//         switch (prop.value) {
-//             .String => |s| std.debug.print("'{s}'\n", .{s.s}),
-//             .Bool => |b| std.debug.print("{}\n", .{b}),
-//             .Uint32 => |u| std.debug.print("{d}\n", .{u}),
-//             .Int32 => |i| std.debug.print("{d}\n", .{i}),
-//             .Double => |d| std.debug.print("{d}\n", .{d}),
-//         }
-//     }
-// }
+fn onDeviceAdded(ctx: *u32, args: struct { GPath }) void {
+    ctx.* += 1;
+    std.debug.print("SIGNAL [Callback]: DeviceAdded triggered! Path: {s}\n", .{args[0].s});
+}
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -179,6 +147,15 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Proxy NameHasOwner: {}\n", .{has_owner});
     }
 
+    // Example 6: Listening to Signals via Generated Proxy Helpers
+    {
+        std.debug.print("\nExample 6: Subscribing to PropertiesChanged via generated proxy helper...\n", .{});
+        var signal_count: u32 = 0;
+        const props = PropertiesProxy.init(&conn);
+        try props.connectPropertiesChanged(&signal_count, onPropertiesChanged);
+        std.debug.print("Successfully subscribed to PropertiesChanged! (handler count={d})\n", .{conn.signal_handlers.items.len});
+    }
+
     // Example 7: Error Handling Test
     {
         std.debug.print("\nTesting Proxy Error Handling (calling non-existent method)...\n", .{});
@@ -195,7 +172,7 @@ pub fn main(init: std.process.Init) !void {
         const noti_proxy = Proxy.init(&conn, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications");
 
         const NotiProp = union(enum) { Bool: bool, String: GStr };
-        const dnd = try noti_proxy.getProperty(NotiProp, "Dnd");
+        const dnd = noti_proxy.getProperty(NotiProp, "Dnd") catch NotiProp{ .Bool = false };
         std.debug.print("Notifications Dnd: {}\n", .{dnd.Bool});
     }
 
@@ -208,6 +185,7 @@ pub fn main(init: std.process.Init) !void {
         var decoder = result.reader();
         // Decode and copy string
         const owned_id = try decoder.decodeAlloc(GStr);
+        defer allocator.free(owned_id.s);
 
         // owned_id should still be valid
         std.debug.print("Owned Bus ID (after deinit): {s}\n", .{owned_id.s});
@@ -216,36 +194,125 @@ pub fn main(init: std.process.Init) !void {
         result.deinit();
     }
 
-    // Example 6: Listening to Signals (Callback based)
-    // {
-    //     std.debug.print("\nListening to signals via Dispatcher... (Ctrl+C to quit)\n", .{});
-    //     try conn.addMatch("type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'");
-    //
-    //     // Register our callback
-    //     try conn.registerSignalHandler("org.freedesktop.DBus.Properties", "PropertiesChanged", onPropertiesChanged, @ptrCast(@constCast(&allocator)));
-    //
-    //     while (true) {
-    //         var msg = try conn.waitMessage();
-    //         defer conn.freeMessage(&msg);
-    //         // waitMessage automatically dispatches registered handlers.
-    //         // Other messages (like NameAcquired) will be returned here and printed by waitMessage debug.
-    //     }
-    // }
-
-    // Example 7: Using Generated proxy
+    // Example 10: Using Generated proxy
     {
         var conn2 = try Connection.init(init.io, allocator, init.environ_map, .System);
         defer conn2.close();
 
         const power = UPowerProxy.init(&conn2);
-        var answer = try power.EnumerateDevices();
-        defer answer.deinit();
-        printData(answer.message.body);
-        std.debug.print("{any}\n{any}\n", .{ answer.message.header, answer.message.body });
-        const paths = try answer.expect([]const GPath);
+        var dev_count: u32 = 0;
+        try power.connectDeviceAdded(&dev_count, onDeviceAdded);
+        std.debug.print("\nExample 10: Subscribed to UPower DeviceAdded signal! (handler count={d})\n", .{conn2.signal_handlers.items.len});
+
+        const paths = try power.EnumerateDevices();
 
         for (paths) |path| {
             std.debug.print("{s}\n", .{path.s});
+            allocator.free(path.s);
+        }
+        allocator.free(paths);
+    }
+
+    // Example 11: MPRIS Metadata Decoding Test
+    {
+        std.debug.print("\nExample 11: MPRIS Metadata Decoding Test\n", .{});
+
+        var reply = try conn.methodCall(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "ListNames",
+            null,
+            &.{},
+        );
+        defer conn.freeMessage(&reply);
+
+        var mpris_name: ?[:0]const u8 = null;
+        var decoder = Decoder.from(allocator, reply);
+        const names = try decoder.decode([]const GStr);
+        defer allocator.free(names);
+
+        for (names) |name| {
+            if (std.mem.startsWith(u8, name.s, "org.mpris.MediaPlayer2.")) {
+                mpris_name = name.s;
+                break;
+            }
+        }
+
+        if (mpris_name) |name| {
+            std.debug.print("Found MPRIS service: {s}\n", .{name});
+
+            var encoder = try Encoder.encode(allocator, GStr.new("org.mpris.MediaPlayer2.Player"));
+            defer encoder.deinit();
+
+            var prop_reply = conn.methodCall(
+                name,
+                "/org/mpris/MediaPlayer2",
+                "org.freedesktop.DBus.Properties",
+                "GetAll",
+                encoder.signature(),
+                encoder.body(),
+            ) catch |err| {
+                std.debug.print("Failed to get properties: {any}\n", .{err});
+                return;
+            };
+            defer conn.freeMessage(&prop_reply);
+
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const arena_alloc = arena.allocator();
+
+            var prop_decoder = Decoder.from(arena_alloc, prop_reply);
+            const props = prop_decoder.decodeAlloc(std.StringHashMap(GVariant)) catch |err| {
+                std.debug.print("Failed to decode properties: {any}\n", .{err});
+                return;
+            };
+
+            if (props.get("Metadata")) |meta_var| {
+                if (meta_var == .dict) {
+                    std.debug.print("Successfully decoded MPRIS Metadata. Item count: {d}\n", .{meta_var.dict.count()});
+                    var it = meta_var.dict.iterator();
+                    while (it.next()) |entry| {
+                        std.debug.print("  - {s}: ", .{entry.key_ptr.*});
+                        const val = if (entry.value_ptr.* == .variant) entry.value_ptr.variant.* else entry.value_ptr.*;
+                        switch (val) {
+                            .string => |s| std.debug.print("\"{s}\"\n", .{s.s}),
+                            .object_path => |o| std.debug.print("path(\"{s}\")\n", .{o.s}),
+                            .int32 => |i| std.debug.print("{d}\n", .{i}),
+                            .uint32 => |u| std.debug.print("{d}\n", .{u}),
+                            .int64 => |i| std.debug.print("{d}\n", .{i}),
+                            .uint64 => |u| std.debug.print("{d}\n", .{u}),
+                            .double => |d| std.debug.print("{d}\n", .{d}),
+                            .boolean => |b| std.debug.print("{}\n", .{b}),
+                            .array => |arr| {
+                                std.debug.print("[", .{});
+                                for (arr, 0..) |item, i| {
+                                    if (i > 0) std.debug.print(", ", .{});
+                                    const inner = if (item == .variant) item.variant.* else item;
+                                    switch (inner) {
+                                        .string => |s_inner| std.debug.print("\"{s}\"", .{s_inner.s}),
+                                        .object_path => |o_inner| std.debug.print("path(\"{s}\")", .{o_inner.s}),
+                                        .int32 => |num| std.debug.print("{d}", .{num}),
+                                        .int64 => |num| std.debug.print("{d}", .{num}),
+                                        .double => |num| std.debug.print("{d}", .{num}),
+                                        else => std.debug.print("{s}", .{@tagName(inner)}),
+                                    }
+                                }
+                                std.debug.print("]\n", .{});
+                            },
+                            .dict => |d_map| std.debug.print("[dict of {d} items]\n", .{d_map.count()}),
+                            .variant => |v| std.debug.print("[variant containing {s}]\n", .{@tagName(v.*)}),
+                            else => |v| std.debug.print("[{s}]\n", .{@tagName(v)}),
+                        }
+                    }
+                } else {
+                    std.debug.print("Metadata property is not a dict. It is: {s}\n", .{@tagName(meta_var)});
+                }
+            } else {
+                std.debug.print("No Metadata property found in MPRIS player.\n", .{});
+            }
+        } else {
+            std.debug.print("No MPRIS service running. Skipping live metadata test.\n", .{});
         }
     }
 }

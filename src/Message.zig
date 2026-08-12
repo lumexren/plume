@@ -315,10 +315,11 @@ pub const MessageHeader = struct {
 
 header: MessageHeader,
 body: []const u8,
+allocator: Allocator = undefined,
 
 /// Creates a new Message.
 pub fn new(header: MessageHeader, body: []const u8) Message {
-    return .{ .header = header, .body = body };
+    return .{ .header = header, .body = body, .allocator = undefined };
 }
 
 /// Packs the message into its wire format.

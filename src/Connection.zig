@@ -798,6 +798,7 @@ fn readNextMessage(this: *Connection) !Message {
             .header_fields = final_fields,
         },
         .body = body,
+        .allocator = this.allocator,
     };
 }
 

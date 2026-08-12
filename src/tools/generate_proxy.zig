@@ -62,8 +62,9 @@ pub fn main(init: process.Init) !void {
     const node = try plume.introspection.parse(allocator, xml.s);
     defer node.deinit(allocator);
 
-    const generated = try plume.generator.generate(allocator, node, dest, path);
-    defer allocator.free(generated);
+    var writer = File.stdout().writerStreaming(init.io, try allocator.alloc(u8, 0x100));
+    defer allocator.free(writer.interface.buffer);
 
-    try File.writeStreamingAll(.stdout(), init.io, generated);
+    try plume.generator.generate(&writer.interface, node, dest, path);
+    try writer.flush();
 }

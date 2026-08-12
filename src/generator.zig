@@ -18,21 +18,23 @@
 // along with this program. If not, see <https://gnu.org/licenses>.
 
 const std = @import("std");
-const ArrayList = std.ArrayList;
 const mem = std.mem;
-const Allocator = mem.Allocator;
-
 const introspection = @import("introspection.zig");
 
-/// Generates Zig Proxy source code from a D-Bus Node tree.
-pub fn generate(allocator: Allocator, node: introspection.Node, dest: ?[]const u8, path: ?[]const u8) ![]const u8 {
-    var out: ArrayList(u8) = try .initCapacity(allocator, 2048);
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "const plume = @import(\"plume\");\n");
-    try out.appendSlice(allocator, "const Proxy = plume.Proxy;\n");
-    try out.appendSlice(allocator, "const MethodResult = plume.MethodResult;\n");
-    try out.appendSlice(allocator, "const GStr = plume.Value.GStr;\n\n");
+/// Generates Zig Proxy source code from a D-Bus Node tree into a writer.
+pub fn generate(writer: anytype, node: introspection.Node, dest: ?[]const u8, path: ?[]const u8) !void {
+    try writer.writeAll(
+        \\const std = @import("std");
+        \\const plume = @import("plume");
+        \\const Proxy = plume.Proxy;
+        \\const GStr = plume.Value.GStr;
+        \\const GPath = plume.Value.GPath;
+        \\const GSig = plume.Value.GSig;
+        \\const GUFd = plume.Value.GUFd;
+        \\const GVariant = plume.Value.GVariant;
+        \\
+        \\
+    );
 
     for (node.interfaces) |iface| {
         // Simple name cleaning (e.g. org.freedesktop.DBus -> DBus)
@@ -41,54 +43,53 @@ pub fn generate(allocator: Allocator, node: introspection.Node, dest: ?[]const u
             short_name = iface.name[pos + 1 ..];
         }
 
-        try out.appendSlice(allocator, "pub const ");
-        try out.appendSlice(allocator, short_name);
-        try out.appendSlice(allocator, "Proxy = struct {\n");
-        try out.appendSlice(allocator, "    inner: Proxy,\n\n");
+        try writer.print(
+            \\pub const {s}Proxy = struct {{
+            \\    inner: Proxy,
+            \\
+            \\    pub fn init(conn: *plume.Connection
+        , .{short_name});
+        if (dest == null) try writer.writeAll(", dest: [:0]const u8");
+        if (path == null) try writer.writeAll(", path: [:0]const u8");
+        try writer.print(
+            \\) {s}Proxy {{
+            \\      return .{{ .inner = Proxy.init(conn
+        , .{short_name});
 
-        try out.appendSlice(allocator, "    pub fn init(conn: *plume.Connection");
-        if (dest == null) try out.appendSlice(allocator, ", dest: [:0]const u8");
-        if (path == null) try out.appendSlice(allocator, ", path: [:0]const u8");
-        try out.appendSlice(allocator, ") ");
-        try out.appendSlice(allocator, short_name);
-        try out.appendSlice(allocator, "Proxy {\n");
-        try out.appendSlice(allocator, "        return .{ .inner = Proxy.init(conn, ");
         if (dest) |d| {
-            try out.print(allocator, "\"{s}\"", .{d});
+            try writer.print(", \"{s}\"", .{d});
         } else {
-            try out.appendSlice(allocator, "dest");
+            try writer.writeAll(", dest");
         }
-        try out.appendSlice(allocator, ", ");
+
         if (path) |p| {
-            try out.print(allocator, "\"{s}\"", .{p});
+            try writer.print(", \"{s}\"", .{p});
         } else {
-            try out.appendSlice(allocator, "path");
+            try writer.writeAll(", path");
         }
-        try out.appendSlice(allocator, ", \"");
-        try out.appendSlice(allocator, iface.name);
-        try out.appendSlice(allocator, "\") };\n");
-        try out.appendSlice(allocator, "    }\n\n");
+
+        try writer.print(
+            \\, "{s}") }};
+            \\}}
+            \\
+            \\
+        , .{iface.name});
 
         for (iface.methods) |method| {
-            try out.appendSlice(allocator, "    pub fn ");
-            try out.appendSlice(allocator, method.name);
-            try out.appendSlice(allocator, "(self: ");
-            try out.appendSlice(allocator, short_name);
-            try out.appendSlice(allocator, "Proxy");
-
+            try writer.print("    pub fn {s}(self: {s}Proxy", .{ method.name, short_name });
             // Generate In args
             var in_idx: usize = 0;
             for (method.args) |arg| {
                 if (mem.eql(u8, arg.direction, "in")) {
-                    try out.appendSlice(allocator, ", ");
+                    try writer.writeAll(", ");
                     if (arg.name.len > 0) {
-                        try out.appendSlice(allocator, arg.name);
+                        try writer.writeAll(arg.name);
                     } else {
-                        try out.print(allocator, "arg{d}", .{in_idx});
+                        try writer.print("arg{d}", .{in_idx});
+                        in_idx += 1;
                     }
-                    try out.appendSlice(allocator, ": ");
-                    try out.appendSlice(allocator, try dbusTypeToZig(arg.type, true));
-                    in_idx += 1;
+                    try writer.writeAll(": ");
+                    try dbusTypeToZig(writer, arg.type, true);
                 }
             }
 
@@ -101,66 +102,173 @@ pub fn generate(allocator: Allocator, node: introspection.Node, dest: ?[]const u
                 }
             }
 
-            const out_type = if (out_sig) |s| try dbusTypeToZig(s, false) else "void";
-            const is_method_result = mem.eql(u8, out_type, "MethodResult");
-
-            try out.appendSlice(allocator, ") !");
-            try out.appendSlice(allocator, out_type);
-            try out.appendSlice(allocator, " {\n");
-
-            if (is_method_result) {
-                try out.appendSlice(allocator, "        const res = try self.inner.call(\"");
+            try writer.writeAll(") !");
+            if (out_sig) |s| {
+                try dbusTypeToZig(writer, s, false);
             } else {
-                try out.appendSlice(allocator, "        var res = try self.inner.call(\"");
+                try writer.writeAll("void");
             }
-            try out.appendSlice(allocator, method.name);
-            try out.appendSlice(allocator, "\", .{");
+
+            try writer.print(
+                \\ {{
+                \\        var res = try self.inner.call("{s}", .{{
+            , .{method.name});
 
             var call_idx: usize = 0;
             var first = true;
             for (method.args) |arg| {
                 if (mem.eql(u8, arg.direction, "in")) {
-                    if (!first) try out.appendSlice(allocator, ", ");
+                    if (!first) try writer.writeByte(',');
                     if (arg.name.len > 0) {
-                        try out.appendSlice(allocator, arg.name);
+                        try writer.print(" {s}", .{arg.name});
                     } else {
-                        try out.print(allocator, "arg{d}", .{call_idx});
+                        try writer.print(" arg{d}", .{call_idx});
                     }
                     first = false;
                     call_idx += 1;
                 }
             }
-            try out.appendSlice(allocator, "});\n");
+            try writer.writeAll("});\n");
 
-            if (mem.eql(u8, out_type, "void")) {
-                try out.appendSlice(allocator, "        res.deinit();\n");
-            } else if (is_method_result) {
-                try out.appendSlice(allocator, "        return res;\n");
-            } else {
-                try out.appendSlice(allocator, "        return res.expect(");
-                try out.appendSlice(allocator, out_type);
-                try out.appendSlice(allocator, ");\n");
+            try writer.writeAll("        defer res.deinit();\n");
+            if (out_sig) |s| {
+                try writer.writeAll("        return res.expectAlloc(");
+                try dbusTypeToZig(writer, s, false);
+                try writer.writeAll(");\n");
             }
-            try out.appendSlice(allocator, "    }\n");
+            try writer.writeAll("    }\n\n");
         }
 
-        try out.appendSlice(allocator, "};\n\n");
-    }
+        for (iface.signals) |signal| {
+            try writer.print(
+                \\    pub fn connect{s}(
+                \\        self: {s}Proxy,
+                \\        ctx: anytype,
+                \\        comptime callback: fn (@TypeOf(ctx), struct{{
+            , .{ signal.name, short_name });
+            var first = true;
+            for (signal.args) |arg| {
+                if (!first) try writer.writeByte(',');
+                try writer.writeByte(' ');
+                try dbusTypeToZig(writer, arg.type, false);
+                first = false;
+            }
 
-    return out.toOwnedSlice(allocator);
+            try writer.writeAll(
+                \\}) void,
+                \\  ) !void {
+                \\      try self.inner.connectSignal(struct{
+            );
+
+            first = true;
+            for (signal.args) |arg| {
+                if (!first) try writer.writeByte(',');
+                try writer.writeByte(' ');
+                try dbusTypeToZig(writer, arg.type, false);
+                first = false;
+            }
+
+            try writer.print(
+                \\}}, "{s}", ctx, callback);
+                \\  }}
+                \\
+            , .{signal.name});
+        }
+
+        try writer.writeAll("};\n\n");
+    }
 }
 
-/// Maps a D-Bus type signature character to its corresponding Zig type (internal helper).
-fn dbusTypeToZig(sig: []const u8, is_param: bool) ![]const u8 {
-    if (mem.eql(u8, sig, "s")) return "GStr";
-    if (mem.eql(u8, sig, "u")) return "u32";
-    if (mem.eql(u8, sig, "b")) return "bool";
-    if (mem.eql(u8, sig, "as")) return "[]const GStr";
-    if (mem.eql(u8, sig, "i")) return "i32";
-    if (mem.eql(u8, sig, "x")) return "i64";
-    if (mem.eql(u8, sig, "t")) return "u64";
-    if (mem.eql(u8, sig, "d")) return "f64";
+fn matchBasicType(sig: []const u8) ?[]const u8 {
+    if (sig.len != 1) return null;
+    return switch (sig[0]) {
+        'y' => "u8",
+        'b' => "bool",
+        'n' => "i16",
+        'q' => "u16",
+        'i' => "i32",
+        'u' => "u32",
+        'x' => "i64",
+        't' => "u64",
+        'd' => "f64",
+        's' => "GStr",
+        'o' => "GPath",
+        'g' => "GSig",
+        'h' => "GUFd",
+        'v' => "GVariant",
+        else => null,
+    };
+}
 
-    if (is_param) return "anytype";
-    return "MethodResult";
+fn nextSingleSig(sig: []const u8) ?[]const u8 {
+    if (sig.len == 0) return null;
+    switch (sig[0]) {
+        'y', 'b', 'n', 'q', 'i', 'u', 'x', 't', 'd', 's', 'o', 'g', 'h', 'v' => return sig[0..1],
+        'a' => {
+            const child = nextSingleSig(sig[1..]) orelse return null;
+            return sig[0 .. 1 + child.len];
+        },
+        '(', '{' => {
+            var depth: usize = 0;
+            const open_char = sig[0];
+            const close_char: u8 = if (open_char == '(') ')' else '}';
+            for (sig, 0..) |c, idx| {
+                if (c == open_char) depth += 1;
+                if (c == close_char) {
+                    depth -= 1;
+                    if (depth == 0) {
+                        return sig[0 .. idx + 1];
+                    }
+                }
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
+
+fn dbusTypeToZig(writer: anytype, sig: []const u8, is_param: bool) !void {
+    if (matchBasicType(sig)) |basic| {
+        return writer.writeAll(basic);
+    }
+
+    // Dictionaries: a{kv}
+    if (sig.len >= 4 and mem.startsWith(u8, sig, "a{") and sig[sig.len - 1] == '}') {
+        const key_char = sig[2];
+        const val_sig = sig[3 .. sig.len - 1];
+        if (key_char == 's' or key_char == 'o' or key_char == 'g') {
+            try writer.writeAll("std.StringHashMap(");
+        } else {
+            try writer.print("std.AutoHashMap({s}, ", .{matchBasicType(sig[2..3]) orelse "u32"});
+        }
+
+        try dbusTypeToZig(writer, val_sig, false);
+        return writer.writeByte(')');
+    }
+
+    // Arrays: a... (excluding dictionaries handled above)
+    if (mem.startsWith(u8, sig, "a")) {
+        const child_sig = sig[1..];
+        try writer.writeAll("[]const ");
+        return dbusTypeToZig(writer, child_sig, false);
+    }
+
+    // Structs / Tuples: (...)
+    if (sig.len >= 2 and sig[0] == '(' and sig[sig.len - 1] == ')') {
+        var inner = sig[1 .. sig.len - 1];
+        try writer.writeAll("struct { ");
+        var fst: bool = true;
+        while (inner.len > 0) {
+            if (!fst) try writer.writeAll(", ");
+            const field_sig = nextSingleSig(inner) orelse break;
+            try dbusTypeToZig(writer, field_sig, is_param);
+            inner = inner[field_sig.len..];
+            fst = false;
+        }
+        if (inner.len > 0) return error.InvalidType;
+        try writer.writeAll(" }");
+        return;
+    }
+
+    return error.InvalidType;
 }

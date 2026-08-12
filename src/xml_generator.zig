@@ -80,9 +80,11 @@ pub fn generateIntrospectionXml(allocator: Allocator, comptime T: type, interfac
         if (@typeInfo(field_type) == .@"struct" and @hasDecl(field_type, "__is_plume_signal")) {
             const PayloadT = field_type.PayloadType;
             try out.print(allocator, "    <signal name=\"{s}\">\n", .{field_name});
-            const sig = try getSignature(allocator, PayloadT);
-            defer allocator.free(sig);
-            try out.print(allocator, "      <arg type=\"{s}\" />\n", .{sig});
+            if (PayloadT != void) {
+                const sig = try getSignature(allocator, PayloadT);
+                defer allocator.free(sig);
+                try out.print(allocator, "      <arg type=\"{s}\" />\n", .{sig});
+            }
             try out.appendSlice(allocator, "    </signal>\n");
         }
     }

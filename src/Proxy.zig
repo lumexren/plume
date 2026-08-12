@@ -91,3 +91,29 @@ pub fn setProperty(this: Proxy, name: [:0]const u8, value: anytype) !void {
     var result = try this.rawCall("org.freedesktop.DBus.Properties", "Set", .{ GStr.new(this.interface), GStr.new(name), value });
     result.deinit();
 }
+
+/// Subscribes to a D-Bus signal on this proxy's interface and registers a typed callback.
+/// `SignalArgs` must be a tuple representing the signal's argument types.
+pub fn connectSignal(this: Proxy, comptime SignalArgs: type, member: [:0]const u8, ctx: anytype, comptime callback: fn (@TypeOf(ctx), SignalArgs) void) !void {
+    const match = try std.fmt.allocPrintSentinel(this.connection.allocator, "type='signal',interface='{s}',member='{s}'", .{ this.interface, member }, 0);
+    defer this.connection.allocator.free(match);
+    try this.connection.addMatch(match);
+
+    const Wrapper = struct {
+        fn handle(raw_ctx: ?*anyopaque, msg: Message) void {
+            const typed_ctx: @TypeOf(ctx) = @ptrCast(@alignCast(raw_ctx));
+            var arena = std.heap.ArenaAllocator.init(msg.allocator);
+            defer arena.deinit();
+            var dec = Decoder.from(arena.allocator(), msg);
+            const args = dec.decode(SignalArgs) catch return;
+            callback(typed_ctx, args);
+        }
+    };
+
+    try this.connection.registerSignalHandler(
+        this.interface,
+        member,
+        Wrapper.handle,
+        @ptrCast(@alignCast(@constCast(ctx))),
+    );
+}

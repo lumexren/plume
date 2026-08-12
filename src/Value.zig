@@ -34,6 +34,8 @@ pub fn dbusAlignOf(comptime T: type) usize {
     if (T == GStr or T == GPath) return 4; // 's','o'
     if (T == GSig) return 1; // 'g'
     if (T == GUFd) return 4; // 'h'
+    if (T == GVariant) return 1; // 'v'
+    if (comptime isDict(T)) return 4; // 'a'
 
     return switch (@typeInfo(T)) {
         .int => |info| switch (info.bits) {
@@ -58,8 +60,12 @@ pub fn dbusAlignOf(comptime T: type) usize {
         },
         .@"union" => 1, // 'v'
         .array => 4, // 'a'
-        .pointer => 4, // 'a' (slice is encoded as array)
-        else => @compileError("Unsupported alignment type for D-Bus"),
+        .pointer => |pi| {
+            if (pi.size == .slice) return 4; // 'a'
+            if (pi.size == .one) return dbusAlignOf(pi.child);
+            @compileError("Unsupported pointer type in dbusAlignOf");
+        },
+        else => @compileError("Unsupported alignment type for D-Bus " ++ @typeName(T)),
     };
 }
 
@@ -99,6 +105,99 @@ pub const GUFd = struct {
     }
 };
 
+pub const GVariantTag = enum {
+    byte,
+    boolean,
+    int16,
+    uint16,
+    int32,
+    uint32,
+    int64,
+    uint64,
+    double,
+    ufd,
+    string,
+    object_path,
+    signature,
+
+    array,
+    tuple,
+    dict,
+    variant,
+};
+
+pub const GVariant = union(GVariantTag) {
+    byte: u8,
+    boolean: bool,
+    int16: i16,
+    uint16: u16,
+    int32: i32,
+    uint32: u32,
+    int64: i64,
+    uint64: u64,
+    double: f64,
+
+    ufd: GUFd,
+    string: GStr,
+    object_path: GPath,
+    signature: GSig,
+
+    array: []GVariant,
+    tuple: []GVariant,
+    dict: std.StringHashMap(GVariant),
+
+    /// Variants can nest variants
+    variant: *GVariant,
+
+    pub fn deinit(self: *GVariant, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .string => |s| allocator.free(s.s),
+            .object_path => |o| allocator.free(o.s),
+            .signature => |s| allocator.free(s.s),
+            .array, .tuple => |arr| {
+                for (arr) |*item| item.deinit(allocator);
+                allocator.free(arr);
+            },
+            .dict => |*map| {
+                var it = map.iterator();
+                while (it.next()) |entry| {
+                    allocator.free(entry.key_ptr.*);
+                    entry.value_ptr.deinit(allocator);
+                }
+                map.deinit();
+            },
+            .variant => |v| {
+                v.deinit(allocator);
+                allocator.destroy(v);
+            },
+            else => {},
+        }
+    }
+};
+
+pub fn isDict(comptime T: type) bool {
+    const info = @typeInfo(T);
+    if (info == .@"struct") {
+        if (@hasDecl(T, "KV") and @hasDecl(T, "iterator")) {
+            const kv_info = @typeInfo(T.KV);
+            if (kv_info == .@"struct" and (kv_info.@"struct".field_names.len == 2)) {
+                return mem.eql(u8, kv_info.@"struct".field_names[0], "key") and mem.eql(u8, kv_info.@"struct".field_names[1], "value");
+            }
+        }
+    }
+    return false;
+}
+
+pub fn dictKV(comptime T: type) struct { key: type, val: type } {
+    const sinfo = @typeInfo(T.KV).@"struct";
+    return .{ .key = sinfo.field_types[0], .val = sinfo.field_types[1] };
+}
+
+fn dictKeyReprLen(comptime K: type) comptime_int {
+    if (K == []const u8 or K == [:0]const u8 or K == []u8 or K == [:0]u8) return 1;
+    return reprLength(K);
+}
+
 /// Checks whether a type implements the D-Bus serialization interface (.ser method).
 pub fn doesImplementSer(comptime T: type) bool {
     if (meta.hasMethod(T, "ser")) {
@@ -123,7 +222,11 @@ pub fn reprLength(comptime T: type) comptime_int {
         else => {},
     }
 
-    if (T == GStr or T == GPath or T == GSig or T == GUFd) return 1;
+    if (T == GStr or T == GPath or T == GSig or T == GUFd or T == GVariant) return 1;
+    if (comptime isDict(T)) {
+        const kv = dictKV(T);
+        return 3 + dictKeyReprLen(kv.key) + reprLength(kv.val);
+    }
 
     switch (info) {
         .int => return 1,
@@ -133,14 +236,22 @@ pub fn reprLength(comptime T: type) comptime_int {
             return 1;
         },
         .@"struct" => |s_info| {
-            var len: usize = if (s_info.field_types.len == 2 and (mem.eql(u8, s_info.field_names[0], "key") and mem.eql(u8, s_info.field_names[1], "value")) or !s_info.is_tuple) 2 else 0;
-            inline for (s_info.field_types) |field| len += reprLength(field);
+            const is_dict_entry = s_info.field_types.len == 2 and (mem.eql(u8, s_info.field_names[0], "key") and mem.eql(u8, s_info.field_names[1], "value"));
+            var len: usize = if (is_dict_entry or !s_info.is_tuple) 2 else 0;
+            inline for (s_info.field_types, s_info.field_names) |field, name| {
+                if (is_dict_entry and (field == []const u8 or field == [:0]const u8 or field == []u8 or field == [:0]u8) and mem.eql(u8, name, "key")) {
+                    len += 1;
+                } else {
+                    len += reprLength(field);
+                }
+            }
             return len;
         },
         .@"union" => return 1,
         .array => |a_info| return 1 + reprLength(a_info.child),
         .pointer => |p_info| {
             if (p_info.size == .slice) return 1 + reprLength(p_info.child);
+            if (p_info.size == .one) return reprLength(p_info.child);
             @compileError("Unsupported pointer type");
         },
         else => @compileError("Unsupported type for signature"),
@@ -175,6 +286,23 @@ pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[l
     } else if (T == GUFd) {
         xs[real_start] = 'h';
         return;
+    } else if (T == GVariant) {
+        xs[real_start] = 'v';
+        return;
+    } else if (comptime isDict(T)) {
+        const kv = dictKV(T);
+        xs[real_start] = 'a';
+        xs[real_start + 1] = '{';
+        xs[len - 1] = '}';
+        const k_len = dictKeyReprLen(kv.key);
+        const v_len = reprLength(kv.val);
+        if (kv.key == []const u8 or kv.key == [:0]const u8 or kv.key == []u8 or kv.key == [:0]u8) {
+            xs[real_start + 2] = 's';
+        } else {
+            getRepr(kv.key, k_len, 0, @as(*[k_len]u8, @ptrCast(xs[real_start + 2 ..][0..k_len])));
+        }
+        getRepr(kv.val, v_len, 0, @as(*[v_len]u8, @ptrCast(xs[real_start + 2 + k_len ..][0..v_len])));
+        return;
     }
 
     switch (info) {
@@ -200,10 +328,15 @@ pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[l
                 real_start += 1;
                 xs[len - 1] = ')';
             }
-            inline for (s_info.field_types) |field| {
-                const ll = reprLength(field);
-                getRepr(field, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start..][0..ll])));
-                real_start += ll;
+            inline for (s_info.field_types, s_info.field_names) |field, name| {
+                if (is_dict_entry and (field == []const u8 or field == [:0]const u8 or field == []u8 or field == [:0]u8) and mem.eql(u8, name, "key")) {
+                    xs[real_start] = 's';
+                    real_start += 1;
+                } else {
+                    const ll = reprLength(field);
+                    getRepr(field, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start..][0..ll])));
+                    real_start += ll;
+                }
             }
         },
         .array => |a_info| {
@@ -212,9 +345,14 @@ pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[l
             getRepr(a_info.child, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start + 1 ..][0..ll])));
         },
         .pointer => |p_info| {
-            xs[real_start] = 'a';
-            const ll = reprLength(p_info.child);
-            getRepr(p_info.child, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start + 1 ..][0..ll])));
+            if (p_info.size == .slice) {
+                xs[real_start] = 'a';
+                const ll = reprLength(p_info.child);
+                getRepr(p_info.child, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start + 1 ..][0..ll])));
+            } else if (p_info.size == .one) {
+                const ll = reprLength(p_info.child);
+                getRepr(p_info.child, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start..][0..ll])));
+            }
         },
         .@"union" => xs[real_start] = 'v',
         else => unreachable,

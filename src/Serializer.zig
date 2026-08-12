@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
+const std = @import("std");
 const Serializer = @This();
 
 const Value = @import("Value.zig");
@@ -41,6 +42,41 @@ pub const SerializerError = error{
 pub fn trySerialize(comptime T: type, data: T, w: *DBusWriter) !void {
     if (comptime Value.doesImplementSer(T)) {
         try data.ser(w);
+        return;
+    }
+
+    if (comptime Value.isDict(T)) {
+        try w.padTo(4);
+        const len_pos = w.buffer.items.len;
+        try w.buffer.appendNTimes(w.allocator, 0, 4);
+
+        try w.padTo(8);
+        const start_elems = w.buffer.items.len;
+
+        var it = data.iterator();
+        while (it.next()) |e| {
+            try w.padTo(8); // each dict-entry
+            const key = e.key_ptr.*;
+            const val = e.value_ptr.*;
+            const kv = Value.dictKV(T);
+            const K = kv.key;
+            const V = kv.val;
+            try w.padTo(Value.dbusAlignOf(K));
+            if (K == []const u8 or K == [:0]const u8 or K == []u8 or K == [:0]u8) {
+                try w.padTo(4);
+                try w.writeInt(u32, @intCast(key.len));
+                try w.buffer.appendSlice(w.allocator, key);
+                try w.buffer.append(w.allocator, 0);
+            } else {
+                try Serializer.trySerialize(K, key, w);
+            }
+            try w.padTo(Value.dbusAlignOf(V));
+            try Serializer.trySerialize(V, val, w);
+        }
+
+        const arr_bytes: usize = w.buffer.items.len - start_elems;
+        if (arr_bytes > std.math.maxInt(u32)) return error.ArrayTooLarge;
+        w.writeU32At(len_pos, @intCast(arr_bytes));
         return;
     }
 
@@ -88,6 +124,9 @@ pub fn trySerialize(comptime T: type, data: T, w: *DBusWriter) !void {
             if (pi.size == .slice) {
                 const Elem = pi.child;
                 try Value.Array(Elem).new(data).ser(w);
+            } else if (pi.size == .one) {
+                const Elem = pi.child;
+                try Serializer.trySerialize(Elem, data.*, w);
             } else return SerializerError.UnsupportedTypeForNow;
         },
         .@"struct" => |sinfo| {

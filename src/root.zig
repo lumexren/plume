@@ -39,3 +39,9 @@ pub const xml_generator = @import("xml_generator.zig");
 
 pub const dbus_types = @import("dbus_types.zig");
 pub const Common = @import("common.zig");
+
+const std = @import("std");
+
+test {
+    std.testing.refAllDecls(@This());
+}
