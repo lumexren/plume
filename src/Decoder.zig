@@ -400,12 +400,12 @@ pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize,
                     this.alignTo(8);
                     sig_pos.* = dict_entry_sig_start;
 
-                    const key_variant = try this.readDynamicVariantInner(sig, sig_pos, deep_copy);
-                    const key_str = switch (key_variant) {
-                        .string => |s| s.s,
-                        .object_path => |o| o.s,
-                        .signature => |s| s.s,
-                        else => unreachable,
+                    const key_str = switch (sig[sig_pos.*]) {
+                        's', 'o', 'g' => blk: {
+                            sig_pos.* += 1;
+                            break :blk try this.readString([]const u8, deep_copy);
+                        },
+                        else => return error.UnsupportedDictKeyType,
                     };
 
                     const val_variant = try this.readDynamicVariantInner(sig, sig_pos, deep_copy);
@@ -417,6 +417,9 @@ pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize,
 
                 if (byte_len == 0) {
                     _ = try this.skipDynamicVariantInner(sig, sig_pos);
+                    _ = try this.skipDynamicVariantInner(sig, sig_pos);
+                    if (sig_pos.* >= sig.len or sig[sig_pos.*] != '}') return error.ExpectedDictEnd;
+                    sig_pos.* += 1;
                 } else {
                     sig_pos.* += 1;
                 }
