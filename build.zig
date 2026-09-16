@@ -22,7 +22,7 @@ const Build = std.Build;
 
 pub fn build(b: *Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const optimize = b.standardOptimizeOption(.{});
 
     const mod = b.addModule("plume", .{
         .root_source_file = b.path("src/root.zig"),
