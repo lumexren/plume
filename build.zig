@@ -40,7 +40,7 @@ pub fn build(b: *Build) void {
     const exe = b.addExecutable(.{
         .name = "plume-test",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests/main.zig"),
+            .root_source_file = b.path("tests/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -60,7 +60,7 @@ pub fn build(b: *Build) void {
     const server_exe = b.addExecutable(.{
         .name = "plume-server-test",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests/server_test.zig"),
+            .root_source_file = b.path("tests/server_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -78,7 +78,7 @@ pub fn build(b: *Build) void {
     const client_exe = b.addExecutable(.{
         .name = "plume-client-test",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests/client_test.zig"),
+            .root_source_file = b.path("tests/client_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -96,7 +96,7 @@ pub fn build(b: *Build) void {
     const intro_exe = b.addExecutable(.{
         .name = "plume-introspection",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools/introspector.zig"),
+            .root_source_file = b.path("tools/introspector.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -116,7 +116,7 @@ pub fn build(b: *Build) void {
     const gen_exe = b.addExecutable(.{
         .name = "plume-generate",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools/generate_proxy.zig"),
+            .root_source_file = b.path("tools/generate_proxy.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
