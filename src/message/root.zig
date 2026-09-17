@@ -25,7 +25,7 @@ pub const Header = @import("header/root.zig");
 pub const Type = Header.Type;
 
 const DBusWriter = @import("../DBusWriter.zig");
-const Value = @import("../Value.zig");
+const Value = @import("../value/root.zig");
 const dbusAlignOf = Value.dbusAlignOf;
 
 const std = @import("std");

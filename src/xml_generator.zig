@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
-const Value = @import("Value.zig");
+const Value = @import("value/root.zig");
 
 const std = @import("std");
 const ArrayList = std.ArrayList;

@@ -21,7 +21,7 @@ const Connection = @This();
 
 const Decoder = @import("Decoder.zig");
 const Encoder = @import("Encoder.zig");
-const Value = @import("Value.zig");
+const Value = @import("value/root.zig");
 const GStr = Value.GStr;
 const GPath = Value.GPath;
 const GSig = Value.GSig;

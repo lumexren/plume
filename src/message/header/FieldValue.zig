@@ -20,7 +20,7 @@
 const FieldValueTag = @import("FieldValueTag.zig").FieldValueTag;
 
 const DBusWriter = @import("../../DBusWriter.zig");
-const Value = @import("../../Value.zig");
+const Value = @import("../../value/root.zig");
 
 /// A union representing the value of a D-Bus message header field.
 pub const FieldValue = union(FieldValueTag) {

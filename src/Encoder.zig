@@ -30,7 +30,7 @@ const mem = std.mem;
 const ArrayList = std.ArrayList;
 const Allocator = mem.Allocator;
 
-const Value = @import("Value.zig");
+const Value = @import("value/root.zig");
 const dbusAlignOf = Value.dbusAlignOf;
 
 allocator: Allocator,

@@ -20,7 +20,7 @@
 /// Writes data to a D-Bus buffer, handling endianness and alignment.
 const DBusWriter = @This();
 
-const Value = @import("Value.zig");
+const Value = @import("value/root.zig");
 
 const utils = @import("utils.zig");
 const convertInteger = utils.convertInteger;

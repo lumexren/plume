@@ -21,7 +21,7 @@
 const Decoder = @This();
 
 const Message = @import("message/root.zig");
-const Value = @import("Value.zig");
+const Value = @import("value/root.zig");
 
 const std = @import("std");
 const lang = std.lang;

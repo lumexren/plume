@@ -31,7 +31,7 @@ pub const MethodResult = @import("MethodResult.zig");
 pub const Proxy = @import("Proxy.zig");
 pub const Serializer = @import("Serializer.zig");
 pub const SocketIterator = @import("SocketIterator.zig");
-pub const Value = @import("Value.zig");
+pub const Value = @import("value/root.zig");
 pub const InterfaceWrapper = @import("InterfaceWrapper.zig");
 pub const SignalHandler = @import("SignalHandler.zig");
 

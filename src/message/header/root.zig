@@ -23,7 +23,7 @@ const Header = @This();
 pub const Field = @import("Field.zig");
 pub const Type = @import("Type.zig").Type;
 
-const Value = @import("../../Value.zig");
+const Value = @import("../../value/root.zig");
 const dbusAlignOf = Value.dbusAlignOf;
 const DBusWriter = @import("../../DBusWriter.zig");
 

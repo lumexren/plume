@@ -20,8 +20,16 @@
 /// Represent a dbus value
 const Value = @This();
 
-const Serializer = @import("Serializer.zig");
-const DBusWriter = @import("DBusWriter.zig");
+const Serializer = @import("../Serializer.zig");
+const DBusWriter = @import("../DBusWriter.zig");
+
+pub const GUFd = @import("GUFd.zig");
+pub const GStr = @import("GStr.zig");
+pub const GPath = @import("GPath.zig");
+pub const GSig = @import("GSig.zig");
+const GVar = @import("GVariant.zig");
+pub const GVariant = GVar.GVariant;
+pub const GVariantTag = GVar.GVariantTag;
 
 const std = @import("std");
 const meta = std.meta;
@@ -68,112 +76,6 @@ pub fn dbusAlignOf(comptime T: type) usize {
         else => @compileError("Unsupported alignment type for D-Bus " ++ @typeName(T)),
     };
 }
-
-/// A wrapper for D-Bus string values.
-pub const GStr = struct {
-    s: [:0]const u8,
-    /// Creates a new GStr from a null-terminated string.
-    pub fn new(s: [:0]const u8) @This() {
-        return .{ .s = s };
-    }
-};
-
-/// A wrapper for D-Bus object path values.
-pub const GPath = struct {
-    s: [:0]const u8,
-    /// Creates a new GPath from a null-terminated string.
-    pub fn new(s: [:0]const u8) @This() {
-        return .{ .s = s };
-    }
-};
-
-/// A wrapper for D-Bus signature values.
-pub const GSig = struct {
-    s: [:0]const u8,
-    /// Creates a new GSig from a null-terminated string.
-    pub fn new(s: [:0]const u8) @This() {
-        return .{ .s = s };
-    }
-};
-
-/// A wrapper for D-Bus Unix file descriptor values.
-pub const GUFd = struct {
-    fd: u32,
-    /// Creates a new GUFd from a file descriptor.
-    pub fn new(fd: u32) @This() {
-        return .{ .fd = fd };
-    }
-};
-
-pub const GVariantTag = enum {
-    byte,
-    boolean,
-    int16,
-    uint16,
-    int32,
-    uint32,
-    int64,
-    uint64,
-    double,
-    ufd,
-    string,
-    object_path,
-    signature,
-
-    array,
-    tuple,
-    dict,
-    variant,
-};
-
-pub const GVariant = union(GVariantTag) {
-    byte: u8,
-    boolean: bool,
-    int16: i16,
-    uint16: u16,
-    int32: i32,
-    uint32: u32,
-    int64: i64,
-    uint64: u64,
-    double: f64,
-
-    ufd: GUFd,
-    string: GStr,
-    object_path: GPath,
-    signature: GSig,
-
-    array: []GVariant,
-    tuple: []GVariant,
-    dict: std.StringHashMap(GVariant),
-
-    /// Variants can nest variants
-    variant: *GVariant,
-
-    pub fn deinit(self: *GVariant, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            .string => |s| allocator.free(s.s),
-            .object_path => |o| allocator.free(o.s),
-            .signature => |s| allocator.free(s.s),
-            .array, .tuple => |arr| {
-                for (arr) |*item| item.deinit(allocator);
-                allocator.free(arr);
-            },
-            .dict => |*map| {
-                var it = map.iterator();
-                while (it.next()) |entry| {
-                    allocator.free(entry.key_ptr.*);
-                    entry.value_ptr.deinit(allocator);
-                }
-                map.deinit();
-            },
-            .variant => |v| {
-                v.deinit(allocator);
-                allocator.destroy(v);
-            },
-            else => {},
-        }
-    }
-};
 
 pub fn isDict(comptime T: type) bool {
     const info = @typeInfo(T);

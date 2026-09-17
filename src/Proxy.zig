@@ -20,7 +20,7 @@
 /// A local representation of a remote D-Bus object.
 const Proxy = @This();
 
-const Value = @import("Value.zig");
+const Value = @import("value/root.zig");
 const Message = @import("message/root.zig");
 const MethodResult = @import("MethodResult.zig");
 const Connection = @import("Connection.zig");

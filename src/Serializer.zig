@@ -20,7 +20,7 @@
 const std = @import("std");
 const Serializer = @This();
 
-const Value = @import("Value.zig");
+const Value = @import("value/root.zig");
 const DBusWriter = @import("DBusWriter.zig");
 
 const GStr = Value.GStr;
