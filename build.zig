@@ -19,12 +19,13 @@
 
 const std = @import("std");
 const Build = std.Build;
+const LtoMode = std.zig.LtoMode;
 
 pub fn build(b: *Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lto = switch (optimize) {
+    const lto: LtoMode = switch (optimize) {
         .debug, .safe => .none,
         .small => .thin,
         .fast => .full,
