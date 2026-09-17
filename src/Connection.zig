@@ -35,6 +35,8 @@ const HeaderField = @import("HeaderField.zig");
 const HeaderFieldCode = HeaderField.HeaderFieldCode;
 const HeaderFieldValue = HeaderField.HeaderFieldValue;
 const SocketIterator = @import("SocketIterator.zig");
+const InterfaceWrapper = @import("InterfaceWrapper.zig");
+const SignalHandler = @import("SignalHandler.zig");
 
 const std = @import("std");
 const lang = std.lang;
@@ -54,7 +56,6 @@ const Allocator = mem.Allocator;
 const debug = std.debug;
 const meta = std.meta;
 
-const common = @import("common.zig");
 const dispatcher = @import("dispatcher.zig");
 const xml_generator = @import("xml_generator.zig");
 
@@ -84,8 +85,8 @@ reader_buffer: []u8,
 reader: net.Stream.Reader,
 serial_counter: u32 = 1,
 pending_messages: ArrayList(Message),
-signal_handlers: ArrayList(common.SignalHandler),
-registered_interfaces: ArrayList(common.InterfaceWrapper),
+signal_handlers: ArrayList(SignalHandler),
+registered_interfaces: ArrayList(InterfaceWrapper),
 
 /// Initializes a new connection to the D-Bus bus.
 /// `bus_type`: The type of bus to connect to (.Session, .System, or .Accessibility).
@@ -326,13 +327,13 @@ pub fn registerObject(this: *Connection, comptime T: type, bus_name: [:0]const u
     const intro_xml = try xml_generator.generateIntrospectionXml(this.allocator, T, interface_name);
 
     // Create wrapper
-    const wrapper: common.InterfaceWrapper = .{
+    const wrapper: InterfaceWrapper = .{
         .instance = @ptrCast(instance_ptr),
         .interface_name = interface_name,
         .path = path,
         .intro_xml = intro_xml,
         .destroy = struct {
-            fn destroy(w: *const common.InterfaceWrapper, allocator: Allocator) void {
+            fn destroy(w: *const InterfaceWrapper, allocator: Allocator) void {
                 const this_ptr = @as(*T, @ptrCast(@alignCast(w.instance)));
                 allocator.destroy(this_ptr);
                 allocator.free(w.intro_xml);

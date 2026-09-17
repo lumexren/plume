@@ -28,19 +28,19 @@ const Message = @import("Message.zig");
 const MessageHeader = Message.MessageHeader;
 const HeaderField = @import("HeaderField.zig");
 const Connection = @import("Connection.zig");
+const InterfaceWrapper = @import("InterfaceWrapper.zig");
+const SignalHandler = @import("SignalHandler.zig");
 
 const std = @import("std");
 const StringHashMap = std.StringHashMap;
 const mem = std.mem;
 const meta = std.meta;
 
-const common = @import("common.zig");
-
 /// Returns a dispatch function for a type T that handles incoming D-Bus method calls,
 /// property access (Get/Set/GetAll), and introspection requests.
-pub fn getDispatchFn(comptime T: type) fn (*const common.InterfaceWrapper, *Connection, Message) anyerror!void {
+pub fn getDispatchFn(comptime T: type) fn (*const InterfaceWrapper, *Connection, Message) anyerror!void {
     return struct {
-        fn dispatch(w: *const common.InterfaceWrapper, connection: *Connection, message: Message) anyerror!void {
+        fn dispatch(w: *const InterfaceWrapper, connection: *Connection, message: Message) anyerror!void {
             const self_obj = @as(*T, @ptrCast(@alignCast(w.instance)));
 
             var member_name: ?[]const u8 = null;

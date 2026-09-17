@@ -27,18 +27,21 @@ pub const Encoder = @import("Encoder.zig");
 pub const Connection = @import("Connection.zig");
 pub const DBusWriter = @import("DBusWriter.zig");
 pub const Message = @import("Message.zig");
+pub const HeaderField = @import("HeaderField.zig");
 pub const MethodResult = @import("MethodResult.zig");
 pub const Proxy = @import("Proxy.zig");
 pub const Serializer = @import("Serializer.zig");
 pub const SocketIterator = @import("SocketIterator.zig");
 pub const Value = @import("Value.zig");
+pub const InterfaceWrapper = @import("InterfaceWrapper.zig");
+pub const SignalHandler = @import("SignalHandler.zig");
 
 pub const introspection = @import("introspection.zig");
 pub const generator = @import("generator.zig");
 pub const xml_generator = @import("xml_generator.zig");
 
 pub const dbus_types = @import("dbus_types.zig");
-pub const Common = @import("common.zig");
+
 
 const std = @import("std");
 

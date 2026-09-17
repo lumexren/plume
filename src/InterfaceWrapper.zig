@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
+/// A wrapper around an interface implementation, used for dispatching incoming D-Bus method calls.
+const InterfaceWrapper = @This();
+
 const Connection = @import("Connection.zig");
 const Message = @import("Message.zig");
 
@@ -24,20 +27,9 @@ const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 
-/// Represents a handler for a D-Bus signal.
-pub const SignalHandler = struct {
-    interface: []const u8,
-    member: []const u8,
-    callback: *const fn (ctx: ?*anyopaque, message: Message) void,
-    ctx: ?*anyopaque,
-};
-
-/// A wrapper around an interface implementation, used for dispatching incoming D-Bus method calls.
-pub const InterfaceWrapper = struct {
-    instance: *anyopaque,
-    dispatch: *const fn (wrapper: *const InterfaceWrapper, conn: *Connection, message: Message) anyerror!void,
-    destroy: *const fn (wrapper: *const InterfaceWrapper, allocator: Allocator) void,
-    interface_name: [:0]const u8,
-    path: [:0]const u8,
-    intro_xml: [:0]const u8,
-};
+instance: *anyopaque,
+dispatch: *const fn (wrapper: *const InterfaceWrapper, conn: *Connection, message: Message) anyerror!void,
+destroy: *const fn (wrapper: *const InterfaceWrapper, allocator: Allocator) void,
+interface_name: [:0]const u8,
+path: [:0]const u8,
+intro_xml: [:0]const u8,
