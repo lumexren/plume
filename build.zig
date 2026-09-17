@@ -24,6 +24,12 @@ pub fn build(b: *Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const lto = switch (optimize) {
+        .debug, .safe => .none,
+        .small => .thin,
+        .fast => .full,
+    };
+
     const mod = b.addModule("plume", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -42,11 +48,7 @@ pub fn build(b: *Build) void {
         }),
     });
 
-    exe.lto = switch (optimize) {
-        .debug, .safe => .none,
-        .small => .thin,
-        .fast => .full,
-    };
+    exe.lto = lto;
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -66,11 +68,7 @@ pub fn build(b: *Build) void {
         }),
     });
 
-    server_exe.lto = switch (optimize) {
-        .debug, .safe => .none,
-        .small => .thin,
-        .fast => .full,
-    };
+    server_exe.lto = lto;
 
     const run_server = b.addRunArtifact(server_exe);
     const server_step = b.step("test-server", "Run the server test app");
@@ -88,11 +86,7 @@ pub fn build(b: *Build) void {
         }),
     });
 
-    client_exe.lto = switch (optimize) {
-        .debug, .safe => .none,
-        .small => .thin,
-        .fast => .full,
-    };
+    client_exe.lto = lto;
 
     const run_client = b.addRunArtifact(client_exe);
     const client_step = b.step("test-client", "Run the client test app");
@@ -110,11 +104,7 @@ pub fn build(b: *Build) void {
         }),
     });
 
-    intro_exe.lto = switch (optimize) {
-        .debug, .safe => .none,
-        .small => .thin,
-        .fast => .full,
-    };
+    intro_exe.lto = lto;
 
     b.installArtifact(intro_exe);
 
@@ -134,11 +124,7 @@ pub fn build(b: *Build) void {
         }),
     });
 
-    gen_exe.lto = switch (optimize) {
-        .debug, .safe => .none,
-        .small => .thin,
-        .fast => .full,
-    };
+    gen_exe.lto = lto;
 
     b.installArtifact(gen_exe);
 
