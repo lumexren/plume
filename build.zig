@@ -22,7 +22,7 @@ const Build = std.Build;
 
 pub fn build(b: *Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const optimize = b.standardOptimizeOption(.{});
 
     const mod = b.addModule("plume", .{
         .root_source_file = b.path("src/root.zig"),
@@ -42,6 +42,12 @@ pub fn build(b: *Build) void {
         }),
     });
 
+    exe.lto = switch (optimize) {
+        .debug, .safe => .none,
+        .small => .thin,
+        .fast => .full,
+    };
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 
@@ -60,6 +66,12 @@ pub fn build(b: *Build) void {
         }),
     });
 
+    server_exe.lto = switch (optimize) {
+        .debug, .safe => .none,
+        .small => .thin,
+        .fast => .full,
+    };
+
     const run_server = b.addRunArtifact(server_exe);
     const server_step = b.step("test-server", "Run the server test app");
     server_step.dependOn(&run_server.step);
@@ -76,6 +88,12 @@ pub fn build(b: *Build) void {
         }),
     });
 
+    client_exe.lto = switch (optimize) {
+        .debug, .safe => .none,
+        .small => .thin,
+        .fast => .full,
+    };
+
     const run_client = b.addRunArtifact(client_exe);
     const client_step = b.step("test-client", "Run the client test app");
     client_step.dependOn(&run_client.step);
@@ -91,7 +109,15 @@ pub fn build(b: *Build) void {
             },
         }),
     });
+
+    intro_exe.lto = switch (optimize) {
+        .debug, .safe => .none,
+        .small => .thin,
+        .fast => .full,
+    };
+
     b.installArtifact(intro_exe);
+
     const run_intro = b.addRunArtifact(intro_exe);
     const intro_step = b.step("introspection", "Run the introspection demo");
     intro_step.dependOn(&run_intro.step);
@@ -107,6 +133,13 @@ pub fn build(b: *Build) void {
             },
         }),
     });
+
+    gen_exe.lto = switch (optimize) {
+        .debug, .safe => .none,
+        .small => .thin,
+        .fast => .full,
+    };
+
     b.installArtifact(gen_exe);
 
     const run_gen = b.addRunArtifact(gen_exe);
