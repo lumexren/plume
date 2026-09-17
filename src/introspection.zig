@@ -105,7 +105,7 @@ const Scanner = struct {
 
             // Handle comments <!-- ... -->
             if (mem.startsWith(u8, this.xml[this.pos..], "!--")) {
-                if (mem.indexOf(u8, this.xml[this.pos..], "-->")) |end| {
+                if (mem.find(u8, this.xml[this.pos..], "-->")) |end| {
                     this.pos += end + 3;
                     continue;
                 }

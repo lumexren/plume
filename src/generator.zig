@@ -39,7 +39,7 @@ pub fn generate(writer: anytype, node: introspection.Node, dest: ?[]const u8, pa
     for (node.interfaces) |iface| {
         // Simple name cleaning (e.g. org.freedesktop.DBus -> DBus)
         var short_name = iface.name;
-        if (mem.lastIndexOfScalar(u8, iface.name, '.')) |pos| {
+        if (mem.findScalarLast(u8, iface.name, '.')) |pos| {
             short_name = iface.name[pos + 1 ..];
         }
 
