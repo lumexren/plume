@@ -20,7 +20,7 @@
 const Encoder = @import("Encoder.zig");
 const Message = @import("Message.zig");
 const MessageHeader = Message.MessageHeader;
-const HeaderField = Message.HeaderField;
+const HeaderField = @import("HeaderField.zig");
 const Connection = @import("Connection.zig");
 
 const std = @import("std");

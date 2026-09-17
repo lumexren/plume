@@ -20,6 +20,8 @@
 /// Represents a D-Bus message, including its header and body.
 const Message = @This();
 
+const HeaderField = @import("HeaderField.zig");
+const HeaderFieldValue = HeaderField.HeaderFieldValue;
 const DBusWriter = @import("DBusWriter.zig");
 const Value = @import("Value.zig");
 const dbusAlignOf = Value.dbusAlignOf;
@@ -31,132 +33,6 @@ const math = std.math;
 const Allocator = mem.Allocator;
 const lang = std.lang;
 const Endian = lang.Endian;
-
-pub const HeaderFieldValueTag = enum {
-    /// The object to send a call to, or the object a signal is emitted from.
-    /// The special path `/org/freedesktop/DBus/Local` is reserved; implementations
-    /// should not send messages with this path, and the reference implementation
-    /// of the bus daemon will disconnect any application that attempts to do so.
-    /// This header field is controlled by the message sender.
-    ///
-    /// **Required In**: `MethodCall`, `Signal`
-    Path,
-    ///  The interface to invoke a method call on, or that a signal is emitted from.
-    ///  Optional for method calls, required for signals.
-    ///  The special interface `org.freedesktop.DBus.Local` is reserved;
-    ///  implementations should not send messages with this interface,
-    ///  and the reference implementation of the bus daemon will disconnect any
-    ///  application that attempts to do so. This header field is controlled by
-    ///  the message sender.
-    ///
-    ///  **Required In**: Signal
-    Interface,
-    ///  The member, either the method name or signal name. This header field
-    ///  is controlled by the message sender.
-    ///
-    /// **Required In**: `MethodCall`, `Signal`
-    Member,
-    /// The name of the error that occurred, for errors
-    ///
-    /// **Required In**: `Error`
-    ErrorName,
-    ///  The serial number of the message this message is a reply to.
-    ///  (The serial number is the second UINT32 in the header.)
-    ///  This header field is controlled by the message sender.
-    ///
-    ///  **Required In**: `Error`, `MethodReturn`
-    ReplySerial,
-    ///  The name of the connection this message is intended for. This field is
-    ///  usually only meaningful in combination with the message bus¹ but other
-    ///  servers may define their own meanings for it. This header field is
-    ///  controlled by the message sender.
-    ///
-    ///  ¹see [the section called "Message Bus Specification"](https://dbus.freedesktop.org/doc/dbus-specification.html#message-bus)
-    ///
-    /// **~optional**
-    Destination,
-    /// Unique name of the sending connection. This field is usually only
-    /// meaningful in combination with the message bus, but other servers may
-    /// define their own meanings for it. On a message bus, this header field
-    /// is controlled by the message bus, so it is as reliable and trustworthy
-    /// as the message bus itself. Otherwise, this header field is controlled
-    /// by the message sender, unless there is out-of-band information that
-    /// indicates otherwise.
-    ///
-    /// **~optional**
-    Sender,
-    /// The signature of the message body.
-    /// If omitted, it is assumed to be the empty signature "" (i.e. the body must be 0-length).
-    /// This header field is controlled by the message sender.
-    ///
-    /// **~optional**
-    Signature,
-    /// The number of Unix file descriptors that accompany the message.
-    /// If omitted, it is assumed that no Unix file descriptors accompany the message.
-    /// The actual file descriptors need to be transferred via platform specific
-    /// mechanism out-of-band. They must be sent at the same time as part of the
-    /// message itself. They may not be sent before the first byte of the message
-    /// itself is transferred or after the last byte of the message itself.
-    /// This header field is controlled by the message sender.
-    ///
-    /// **~optional**
-    UnixFds,
-};
-
-/// A union representing the value of a D-Bus message header field.
-pub const HeaderFieldValue = union(HeaderFieldValueTag) {
-    Path: [:0]const u8,
-    Interface: [:0]const u8,
-    Member: [:0]const u8,
-    ErrorName: [:0]const u8,
-    ReplySerial: u32,
-    Destination: [:0]const u8,
-    Sender: [:0]const u8,
-    Signature: [:0]const u8,
-    UnixFds: u32,
-
-    pub fn ser(this: @This(), w: *DBusWriter) !void {
-        const Sig = Value.Signature();
-        const Str = Value.String();
-        const Path = Value.ObjectPath();
-        const U32 = Value.Uint32();
-
-        switch (this) {
-            .UnixFds, .ReplySerial => |x| {
-                try U32.new(x).ser(&w);
-            },
-            .Path => |v| {
-                try Path.new(v).ser(&w);
-            },
-            .Interface, .Member, .ErrorName, .Destination, .Sender => |v| {
-                try Str.new(v).ser(&w);
-            },
-            .Signature => |v| {
-                try Sig.new(v).ser(&w);
-            },
-        }
-    }
-};
-
-/// The type code for a D-Bus message header field.
-pub const HeaderFieldCode = enum(u8) {
-    Invalid = 0x0,
-    Path = 0x1,
-    Interface = 0x2,
-    Member = 0x3,
-    ErrorName = 0x4,
-    ReplySerial = 0x5,
-    Destination = 0x6,
-    Sender = 0x7,
-    Signature = 0x8,
-    UnixFds = 0x9,
-};
-
-/// A D-Bus message header field consisting of a code and a value.
-pub const HeaderField = struct {
-    code: HeaderFieldCode,
-    value: HeaderFieldValue,
-};
 
 pub const MessageFlag = enum(u8) {
     __EMPTY = 0x0,

@@ -31,9 +31,9 @@ const Message = @import("Message.zig");
 const MessageHeader = Message.MessageHeader;
 const MessageType = Message.MessageType;
 const MessageFlag = Message.MessageFlag;
-const HeaderField = Message.HeaderField;
-const HeaderFieldCode = Message.HeaderFieldCode;
-const HeaderFieldValue = Message.HeaderFieldValue;
+const HeaderField = @import("HeaderField.zig");
+const HeaderFieldCode = HeaderField.HeaderFieldCode;
+const HeaderFieldValue = HeaderField.HeaderFieldValue;
 const SocketIterator = @import("SocketIterator.zig");
 
 const std = @import("std");
