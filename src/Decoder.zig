@@ -20,7 +20,7 @@
 /// Helper to decode values from a D-Bus message body according to its signature.
 const Decoder = @This();
 
-const Message = @import("Message.zig");
+const Message = @import("message/root.zig");
 const Value = @import("Value.zig");
 
 const std = @import("std");

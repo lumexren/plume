@@ -17,13 +17,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
-/// A D-Bus message header field consisting of a code and a value.
-const HeaderField = @This();
-
-const Value = @import("Value.zig");
-const DBusWriter = @import("DBusWriter.zig");
-
-pub const HeaderFieldValueTag = enum {
+pub const FieldValueTag = enum {
     /// The object to send a call to, or the object a signal is emitted from.
     /// The special path `/org/freedesktop/DBus/Local` is reserved; implementations
     /// should not send messages with this path, and the reference implementation
@@ -93,55 +87,3 @@ pub const HeaderFieldValueTag = enum {
     /// **~optional**
     UnixFds,
 };
-
-/// A union representing the value of a D-Bus message header field.
-pub const HeaderFieldValue = union(HeaderFieldValueTag) {
-    Path: [:0]const u8,
-    Interface: [:0]const u8,
-    Member: [:0]const u8,
-    ErrorName: [:0]const u8,
-    ReplySerial: u32,
-    Destination: [:0]const u8,
-    Sender: [:0]const u8,
-    Signature: [:0]const u8,
-    UnixFds: u32,
-
-    pub fn ser(this: HeaderFieldValue, w: *DBusWriter) !void {
-        const Sig = Value.Signature();
-        const Str = Value.String();
-        const Path = Value.ObjectPath();
-        const U32 = Value.Uint32();
-
-        switch (this) {
-            .UnixFds, .ReplySerial => |x| {
-                try U32.new(x).ser(&w);
-            },
-            .Path => |v| {
-                try Path.new(v).ser(&w);
-            },
-            .Interface, .Member, .ErrorName, .Destination, .Sender => |v| {
-                try Str.new(v).ser(&w);
-            },
-            .Signature => |v| {
-                try Sig.new(v).ser(&w);
-            },
-        }
-    }
-};
-
-/// The type code for a D-Bus message header field.
-pub const HeaderFieldCode = enum(u8) {
-    Invalid = 0x0,
-    Path = 0x1,
-    Interface = 0x2,
-    Member = 0x3,
-    ErrorName = 0x4,
-    ReplySerial = 0x5,
-    Destination = 0x6,
-    Sender = 0x7,
-    Signature = 0x8,
-    UnixFds = 0x9,
-};
-
-code: HeaderFieldCode,
-value: HeaderFieldValue,

@@ -21,7 +21,7 @@
 const InterfaceWrapper = @This();
 
 const Connection = @import("Connection.zig");
-const Message = @import("Message.zig");
+const Message = @import("message/root.zig");
 
 const std = @import("std");
 const mem = std.mem;

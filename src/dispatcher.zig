@@ -24,9 +24,9 @@ const GStr = Value.GStr;
 const GPath = Value.GPath;
 const GSig = Value.GSig;
 const GUFd = Value.GUFd;
-const Message = @import("Message.zig");
-const MessageHeader = Message.MessageHeader;
-const HeaderField = @import("HeaderField.zig");
+const Message = @import("message/root.zig");
+const MessageHeader = Message.Header;
+const MessageHeaderField = MessageHeader.Field;
 const Connection = @import("Connection.zig");
 const InterfaceWrapper = @import("InterfaceWrapper.zig");
 const SignalHandler = @import("SignalHandler.zig");
@@ -265,7 +265,7 @@ pub fn getDispatchFn(comptime T: type) fn (*const InterfaceWrapper, *Connection,
                                                     .proto_version = 1,
                                                     .body_length = @intCast(sig_encoder.body().len),
                                                     .serial = serial,
-                                                    .header_fields = @constCast(&[_]HeaderField{
+                                                    .header_fields = @constCast(&[_]MessageHeaderField{
                                                         .{ .code = .Path, .value = .{ .Path = w.path } },
                                                         .{ .code = .Interface, .value = .{ .Interface = "org.freedesktop.DBus.Properties" } },
                                                         .{ .code = .Member, .value = .{ .Member = "PropertiesChanged" } },

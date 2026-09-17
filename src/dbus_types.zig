@@ -18,9 +18,9 @@
 // along with this program. If not, see <https://gnu.org/licenses>.
 
 const Encoder = @import("Encoder.zig");
-const Message = @import("Message.zig");
-const MessageHeader = Message.MessageHeader;
-const HeaderField = @import("HeaderField.zig");
+const Message = @import("message/root.zig");
+const MessageHeader = Message.Header;
+const MessageHeaderField = MessageHeader.Field;
 const Connection = @import("Connection.zig");
 
 const std = @import("std");
@@ -55,7 +55,7 @@ pub fn Signal(comptime T: type) type {
                 .proto_version = 1,
                 .body_length = @intCast(encoder.body().len),
                 .serial = serial,
-                .header_fields = @constCast(&[_]HeaderField{
+                .header_fields = @constCast(&[_]MessageHeaderField{
                     .{ .code = .Path, .value = .{ .Path = path } },
                     .{ .code = .Interface, .value = .{ .Interface = interface } },
                     .{ .code = .Member, .value = .{ .Member = this.name } },

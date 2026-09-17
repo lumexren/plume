@@ -27,13 +27,13 @@ const GPath = Value.GPath;
 const GSig = Value.GSig;
 const GUFd = Value.GUFd;
 const DBusWriter = @import("DBusWriter.zig");
-const Message = @import("Message.zig");
-const MessageHeader = Message.MessageHeader;
-const MessageType = Message.MessageType;
-const MessageFlag = Message.MessageFlag;
-const HeaderField = @import("HeaderField.zig");
-const HeaderFieldCode = HeaderField.HeaderFieldCode;
-const HeaderFieldValue = HeaderField.HeaderFieldValue;
+const Message = @import("message/root.zig");
+const MessageFlag = Message.Flag;
+const MessageHeader = Message.Header;
+const MessageHeaderType = MessageHeader.Type;
+const MessageHeaderField = MessageHeader.Field;
+const MessageHeaderFieldCode = MessageHeaderField.Code;
+const MessageHeaderFieldValue = MessageHeaderField.Value;
 const SocketIterator = @import("SocketIterator.zig");
 const InterfaceWrapper = @import("InterfaceWrapper.zig");
 const SignalHandler = @import("SignalHandler.zig");
@@ -198,11 +198,11 @@ fn sayHello(this: *Connection) !void {
         .proto_version = 1,
         .body_length = 0,
         .serial = serial,
-        .header_fields = @constCast(&[_]HeaderField{
-            .{ .code = HeaderFieldCode.Path, .value = .{ .Path = "/org/freedesktop/DBus" } },
-            .{ .code = HeaderFieldCode.Destination, .value = .{ .Destination = "org.freedesktop.DBus" } },
-            .{ .code = HeaderFieldCode.Interface, .value = .{ .Interface = "org.freedesktop.DBus" } },
-            .{ .code = HeaderFieldCode.Member, .value = .{ .Member = "Hello" } },
+        .header_fields = @constCast(&[_]MessageHeaderField{
+            .{ .code = MessageHeaderFieldCode.Path, .value = .{ .Path = "/org/freedesktop/DBus" } },
+            .{ .code = MessageHeaderFieldCode.Destination, .value = .{ .Destination = "org.freedesktop.DBus" } },
+            .{ .code = MessageHeaderFieldCode.Interface, .value = .{ .Interface = "org.freedesktop.DBus" } },
+            .{ .code = MessageHeaderFieldCode.Member, .value = .{ .Member = "Hello" } },
         }),
     };
 
@@ -260,12 +260,12 @@ pub fn requestName(this: *Connection, name: [:0]const u8) !void {
         .proto_version = 1,
         .body_length = @intCast(body_arr.items.len),
         .serial = serial,
-        .header_fields = @constCast(&[_]HeaderField{
-            .{ .code = HeaderFieldCode.Destination, .value = .{ .Destination = "org.freedesktop.DBus" } },
-            .{ .code = HeaderFieldCode.Interface, .value = .{ .Interface = "org.freedesktop.DBus" } },
-            .{ .code = HeaderFieldCode.Path, .value = .{ .Path = "/org/freedesktop/DBus" } },
-            .{ .code = HeaderFieldCode.Member, .value = .{ .Member = "RequestName" } },
-            .{ .code = HeaderFieldCode.Signature, .value = .{ .Signature = "su" } },
+        .header_fields = @constCast(&[_]MessageHeaderField{
+            .{ .code = MessageHeaderFieldCode.Destination, .value = .{ .Destination = "org.freedesktop.DBus" } },
+            .{ .code = MessageHeaderFieldCode.Interface, .value = .{ .Interface = "org.freedesktop.DBus" } },
+            .{ .code = MessageHeaderFieldCode.Path, .value = .{ .Path = "/org/freedesktop/DBus" } },
+            .{ .code = MessageHeaderFieldCode.Member, .value = .{ .Member = "RequestName" } },
+            .{ .code = MessageHeaderFieldCode.Signature, .value = .{ .Signature = "su" } },
         }),
     };
 
@@ -354,7 +354,7 @@ pub fn registerObject(this: *Connection, comptime T: type, bus_name: [:0]const u
 
 /// Sends a reply to a method call.
 pub fn sendReply(this: *Connection, message: Message, enc: Encoder) !void {
-    var reply_fields: ArrayList(HeaderField) = try .initCapacity(this.allocator, 3);
+    var reply_fields: ArrayList(MessageHeaderField) = try .initCapacity(this.allocator, 3);
 
     defer {
         for (reply_fields.items) |f| {
@@ -402,7 +402,7 @@ pub fn sendReply(this: *Connection, message: Message, enc: Encoder) !void {
 
 /// Sends an Error reply to a message.
 pub fn sendError(this: *Connection, m: Message, error_name: [:0]const u8, error_msg: [:0]const u8) !void {
-    var reply_fields: ArrayList(HeaderField) = try .initCapacity(this.allocator, 4);
+    var reply_fields: ArrayList(MessageHeaderField) = try .initCapacity(this.allocator, 4);
 
     defer {
         for (reply_fields.items) |f| {
@@ -578,7 +578,7 @@ pub fn methodCall(self: *Connection, dest: [:0]const u8, path: [:0]const u8, ifa
     const serial = self.serial_counter;
     defer self.serial_counter += 1;
 
-    var fields_list: ArrayList(HeaderField) = try .initCapacity(self.allocator, 5);
+    var fields_list: ArrayList(MessageHeaderField) = try .initCapacity(self.allocator, 5);
     defer fields_list.deinit(self.allocator);
 
     try fields_list.append(self.allocator, .{ .code = .Destination, .value = .{ .Destination = dest } });
@@ -674,7 +674,7 @@ fn readNextMessage(this: *Connection) !Message {
         else => return error.BadEndianFlag,
     };
 
-    const mtype: MessageType = @enumFromInt(header_buf[1]);
+    const mtype: MessageHeaderType = @enumFromInt(header_buf[1]);
     const flags = header_buf[2];
     const version = header_buf[3];
     const body_len = mem.readInt(u32, header_buf[4..8], endian);
@@ -700,7 +700,7 @@ fn readNextMessage(this: *Connection) !Message {
     try io_reader.readSliceAll(body);
 
     // Parse fields
-    var fields_list: ArrayList(HeaderField) = try .initCapacity(this.allocator, 4);
+    var fields_list: ArrayList(MessageHeaderField) = try .initCapacity(this.allocator, 4);
     errdefer {
         for (fields_list.items) |f| {
             switch (f.value) {
@@ -722,7 +722,7 @@ fn readNextMessage(this: *Connection) !Message {
         if (freader.seek >= fields_len) break;
 
         const code_u8 = try freader.takeByte();
-        const code: HeaderFieldCode = if (code_u8 <= 9) @enumFromInt(code_u8) else .Invalid;
+        const code: MessageHeaderFieldCode = if (code_u8 <= 9) @enumFromInt(code_u8) else .Invalid;
 
         // Variant signature (we assume standard fields have correct types)
         const sig_len = try freader.takeByte();
@@ -756,7 +756,7 @@ fn readNextMessage(this: *Connection) !Message {
                 try freader.readSliceAll(s_owned);
                 try freader.discardAll(1); // null
 
-                const hfv: HeaderFieldValue = switch (c) {
+                const hfv: MessageHeaderFieldValue = switch (c) {
                     .Path => .{ .Path = s_owned },
                     .Interface => .{ .Interface = s_owned },
                     .Member => .{ .Member = s_owned },
@@ -772,7 +772,7 @@ fn readNextMessage(this: *Connection) !Message {
                 // For now, assume it consumes nothing more or panic?
                 // We risk desync here.
                 debug.print("WARN: Unknown Header Field Code {d}\n", .{code_u8});
-                return error.UnknownHeaderField;
+                return error.UnknownMessageHeaderField;
             },
         }
     }

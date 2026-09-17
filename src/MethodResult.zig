@@ -21,7 +21,7 @@
 /// Owns the reply message and provides methods to decode its body.
 const MethodResult = @This();
 
-const Message = @import("Message.zig");
+const Message = @import("message/root.zig");
 const Connection = @import("Connection.zig");
 const Decoder = @import("Decoder.zig");
 

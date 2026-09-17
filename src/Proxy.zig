@@ -21,7 +21,7 @@
 const Proxy = @This();
 
 const Value = @import("Value.zig");
-const Message = @import("Message.zig");
+const Message = @import("message/root.zig");
 const MethodResult = @import("MethodResult.zig");
 const Connection = @import("Connection.zig");
 const Decoder = @import("Decoder.zig");
