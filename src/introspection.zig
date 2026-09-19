@@ -2,7 +2,7 @@
 //
 // This file is part of plume.
 //
-// Copyright (c) 2026 erffy
+// Copyright (c) 2026 erenvly
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -308,7 +308,6 @@ fn getAttr(attrs: []const u8, name: []const u8) ?[]const u8 {
         while (i < attrs.len and !ascii.isWhitespace(attrs[i])) : (i += 1) {}
         while (i < attrs.len and ascii.isWhitespace(attrs[i])) : (i += 1) {}
     }
-    
+
     return null;
 }
-

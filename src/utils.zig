@@ -2,7 +2,7 @@
 //
 // This file is part of plume.
 //
-// Copyright (c) 2026 erffy
+// Copyright (c) 2026 erenvly
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -28,7 +28,7 @@ pub inline fn convertInteger(comptime T: type, x: T, endianess: Endian) [@sizeOf
         .int => {},
         else => @compileError("convertInteger expects an integer type"),
     };
-    
+
     return mem.toBytes(mem.nativeTo(T, x, endianess));
 }
 

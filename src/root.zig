@@ -2,7 +2,7 @@
 //
 // This file is part of plume.
 //
-// Copyright (c) 2026 erffy
+// Copyright (c) 2026 erenvly
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -40,7 +40,6 @@ pub const generator = @import("generator.zig");
 pub const xml_generator = @import("xml_generator.zig");
 
 pub const dbus_types = @import("dbus_types.zig");
-
 
 const std = @import("std");
 
