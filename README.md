@@ -30,7 +30,7 @@ See [WIKI](WIKI.md)
 
 <div align="center">
 
-**Made with ❤️ by Me**<br>
+**Built with ❤️ by erenvly**<br>
 <sup>forked from <a href="https://github.com/luxluth/goose" target="_blank">luxluth/goose</a>
 
 *Star ⭐ this repo if you find it useful!*<br>
