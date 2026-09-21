@@ -95,7 +95,7 @@ pub fn setProperty(this: Proxy, name: [:0]const u8, value: anytype) !void {
 /// Subscribes to a D-Bus signal on this proxy's interface and registers a typed callback.
 /// `SignalArgs` must be a tuple representing the signal's argument types.
 pub fn connectSignal(this: Proxy, comptime SignalArgs: type, member: [:0]const u8, ctx: anytype, comptime callback: fn (@TypeOf(ctx), SignalArgs) void) !void {
-    const match = try std.fmt.allocPrintSentinel(this.connection.allocator, "type='signal',interface='{s}',member='{s}'", .{ this.interface, member }, 0);
+    const match = try std.Allocator.printSentinel(this.connection.allocator, "type='signal',interface='{s}',member='{s}'", .{ this.interface, member }, 0);
     defer this.connection.allocator.free(match);
     try this.connection.addMatch(match);
 

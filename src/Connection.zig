@@ -47,7 +47,6 @@ const Io = std.Io;
 const Reader = Io.Reader;
 const net = Io.net;
 const os = std.os;
-const fmt = std.fmt;
 const process = std.process;
 const Environ = process.Environ;
 const Map = Environ.Map;
@@ -115,7 +114,7 @@ pub fn init(io: Io, allocator: Allocator, map: *Map, bus_type: BusType) !Connect
                 socket_paths = .init(addr);
             } else {
                 const uid = os.linux.getuid();
-                allocated_path = try fmt.allocPrint(allocator, "unix:path=/run/user/{d}/at-spi/bus_0", .{uid});
+                allocated_path = try Allocator.print(allocator, "unix:path=/run/user/{d}/at-spi/bus_0", .{uid});
                 socket_paths = .init(allocated_path.?);
             }
         },
@@ -160,7 +159,7 @@ fn auth(this: *Connection) !void {
 
     const uid: u32 = os.linux.getuid();
     var uid_buf: [32]u8 = undefined;
-    const uid_str = try fmt.bufPrint(&uid_buf, "{}", .{uid});
+    const uid_str = try mem.print(&uid_buf, "{}", .{uid});
 
     var hex_buf: [64]u8 = undefined;
     var out_i: usize = 0;
