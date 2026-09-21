@@ -114,7 +114,7 @@ pub fn init(io: Io, allocator: Allocator, map: *Map, bus_type: BusType) !Connect
                 socket_paths = .init(addr);
             } else {
                 const uid = os.linux.getuid();
-                allocated_path = try Allocator.print(allocator, "unix:path=/run/user/{d}/at-spi/bus_0", .{uid});
+                allocated_path = try allocator.print("unix:path=/run/user/{d}/at-spi/bus_0", .{uid});
                 socket_paths = .init(allocated_path.?);
             }
         },
