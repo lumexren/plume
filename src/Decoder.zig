@@ -20,162 +20,122 @@
 /// Helper to decode values from a D-Bus message body according to its signature.
 const Decoder = @This();
 
-const Message = @import("message/root.zig");
-const Value = @import("value/root.zig");
+const Message = @import("Message.zig");
+const Value = @import("value/Value.zig");
+const dbusAlignOf = Value.dbusAlignOf;
 
 const std = @import("std");
-const lang = std.lang;
-const Endian = lang.Endian;
-const meta = std.meta;
-const mem = std.mem;
+const StringHashMap = std.StringHashMap;
 const ArrayList = std.ArrayList;
+const Endian = std.lang.Endian;
+const mem = std.mem;
 const Allocator = mem.Allocator;
-
-const dbusAlignOf = Value.dbusAlignOf;
 
 allocator: Allocator,
 body: []const u8,
 signature: []const u8,
-pos: usize,
-sig_pos: usize,
+pos: usize = 0,
+sig_pos: usize = 0,
 endian: Endian,
 
 /// Initializes a decoder with raw body and signature.
 pub fn init(allocator: Allocator, body: []const u8, signature: []const u8, endian: Endian) Decoder {
-    return .{ .allocator = allocator, .body = body, .signature = signature, .pos = 0, .sig_pos = 0, .endian = endian };
+    return .{ .allocator = allocator, .body = body, .signature = signature, .endian = endian };
 }
 
 /// Initializes a decoder from a Message, extracting the signature from header fields.
-pub fn from(allocator: Allocator, message: Message) Decoder {
-    var signature: []const u8 = "";
+pub fn fromMessage(allocator: Allocator, message: Message) Decoder {
+    var sig: []const u8 = "";
     for (message.header.header_fields) |field| {
         if (field.code == .Signature) {
-            signature = field.value.Signature;
+            sig = field.value.Signature;
             break;
         }
     }
 
-    return .init(allocator, message.body, signature, message.header.endianess);
+    return .{
+        .allocator = allocator,
+        .body = message.body,
+        .signature = sig,
+        .endian = message.header.endianess,
+    };
 }
 
-/// Aligns the decoder position to the specified boundary (internal helper).
 fn alignTo(this: *Decoder, alignment: usize) void {
     const rem = this.pos % alignment;
-    if (rem != 0) {
-        this.pos += (alignment - rem);
-    }
-}
-
-/// Validates the signature against the expected type and aligns the decoder position (internal helper).
-fn validateAndAlign(this: *Decoder, comptime T: type) !void {
-    const sig_len = Value.reprLength(T);
-    var expected_sig: [256]u8 = undefined;
-    Value.getRepr(T, sig_len, 0, expected_sig[0..sig_len]);
-
-    if (this.sig_pos + sig_len > this.signature.len) return error.SignatureEnd;
-
-    const actual_sig = this.signature[this.sig_pos .. this.sig_pos + sig_len];
-
-    // Check for exact match, with a fallback allowing Object Paths ('o') to match Strings ('s')
-    if (!mem.eql(u8, actual_sig, expected_sig[0..sig_len])) {
-        const is_string_type = (T == Value.GStr or T == Value.GPath);
-        const wire_is_path_or_str = (actual_sig[0] == 'o' or actual_sig[0] == 's');
-
-        if (!(is_string_type and wire_is_path_or_str and sig_len == 1)) {
-            return error.SignatureMismatch;
-        }
-    }
-
-    this.sig_pos += sig_len;
-    this.alignTo(dbusAlignOf(T));
+    if (rem != 0) this.pos += (alignment - rem);
 }
 
 /// Decodes the next value of type T from the body.
 /// Returns error.SignatureMismatch if the body signature doesn't match T's D-Bus representation.
 pub fn decode(this: *Decoder, comptime T: type) anyerror!T {
-    try this.validateAndAlign(T);
-    return this.readValue(T, false);
+    const sig_len = Value.reprLength(T);
+    var expected_sig: [256]u8 = undefined;
+    Value.getRepr(T, sig_len, 0, expected_sig[0..sig_len]);
+
+    if (this.sig_pos + sig_len > this.signature.len) return error.SignatureEnd;
+    if (!mem.eql(u8, this.signature[this.sig_pos .. this.sig_pos + sig_len], expected_sig[0..sig_len])) return error.SignatureMismatch;
+
+    this.sig_pos += sig_len;
+
+    this.alignTo(dbusAlignOf(T));
+
+    return this.readVal(T, false);
 }
 
 /// Decodes the next value of type T and allocates memory for it (recursive deep-copy).
 /// This allows the returned value to outlive the decoder and the message body.
 pub fn decodeAlloc(this: *Decoder, comptime T: type) anyerror!T {
-    try this.validateAndAlign(T);
-    return this.readValue(T, true);
+    const sig_len = Value.reprLength(T);
+    var expected_sig: [256]u8 = undefined;
+    Value.getRepr(T, sig_len, 0, expected_sig[0..sig_len]);
+
+    if (this.sig_pos + sig_len > this.signature.len) return error.SignatureEnd;
+    if (!mem.eql(u8, this.signature[this.sig_pos .. this.sig_pos + sig_len], expected_sig[0..sig_len])) return error.SignatureMismatch;
+
+    this.sig_pos += sig_len;
+
+    this.alignTo(dbusAlignOf(T));
+
+    return this.readVal(T, true);
 }
 
-fn readString(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerror!T {
-    this.alignTo(dbusAlignOf(u32));
-    if (this.pos + 4 > this.body.len) return error.EndOfBody;
-    const len = mem.readInt(u32, this.body[this.pos..][0..4], this.endian);
-    this.pos += 4;
-
-    if (this.pos + len + 1 > this.body.len) return error.EndOfBody;
-    if (this.body[this.pos + len] != 0) return error.MissingNullTerminator;
-
-    const s = this.body[this.pos .. this.pos + len :0];
-    this.pos += len + 1;
-
-    if (T == Value.GStr or T == Value.GPath) {
-        if (deep_copy) {
-            const new_s = try this.allocator.allocSentinel(u8, s.len, 0);
-            @memcpy(new_s, s);
-            return T.new(new_s);
-        } else {
-            return T.new(s);
-        }
-    } else if (T == [:0]const u8) {
-        if (deep_copy) {
-            const new_s = try this.allocator.allocSentinel(u8, s.len, 0);
-            @memcpy(new_s, s);
-            return new_s;
-        } else {
-            return s;
-        }
-    } else if (T == []const u8 or T == []u8) {
-        if (deep_copy) {
-            const new_s = try this.allocator.alloc(u8, s.len);
-            @memcpy(new_s, s);
-            return new_s;
-        } else {
-            return s;
-        }
-    } else {
-        return error.UnsupportedType;
-    }
-}
-
-/// Reads a value of type T from the body at the current position (internal helper).
-fn readValue(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerror!T {
+fn readVal(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerror!T {
     if (comptime Value.isDict(T)) {
-        this.alignTo(dbusAlignOf(u32));
-        const byte_len = try this.readValue(u32, false);
+        const byte_len = try this.readVal(u32, false);
         this.alignTo(8);
 
         const start_pos = this.pos;
         if (this.pos + byte_len > this.body.len) return error.EndOfBody;
 
-        const kv = Value.dictKV(T);
-        const K = kv.key;
-        const V = kv.val;
-
-        var map = T.init(this.allocator);
+        var map: T = .init(this.allocator);
         errdefer map.deinit();
 
         while (this.pos - start_pos < byte_len) {
             this.alignTo(8);
-            const k = if (K == []const u8 or K == [:0]const u8 or K == Value.GStr or K == Value.GPath)
-                try this.readString(K, deep_copy)
-            else
-                try this.readValue(K, deep_copy);
-
-            errdefer if (deep_copy) {
-                if (K == []const u8 or K == [:0]const u8) this.allocator.free(k) else freeValue(this.allocator, K, k);
-            };
+            const kv = Value.dictKV(T);
+            const K = kv.key;
+            const V = kv.val;
+            const key = if (K == []const u8 or K == [:0]const u8 or K == []u8 or K == [:0]u8) blk: {
+                if (this.pos + 4 > this.body.len) return error.EndOfBody;
+                const len = mem.readInt(u32, this.body[this.pos..][0..4], this.endian);
+                this.pos += 4;
+                if (this.pos + len + 1 > this.body.len) return error.EndOfBody;
+                if (this.body[this.pos + len] != 0) return error.MissingNullTerminator;
+                const s = this.body[this.pos .. this.pos + len :0];
+                this.pos += len + 1;
+                if (deep_copy) {
+                    const new_s = try this.allocator.allocSentinel(u8, s.len, 0);
+                    @memcpy(new_s, s);
+                    break :blk new_s;
+                } else {
+                    break :blk s;
+                }
+            } else try this.readVal(K, deep_copy);
 
             this.alignTo(dbusAlignOf(V));
-            const v = try this.readValue(V, deep_copy);
-            try map.put(k, v);
+            const val = try this.readVal(V, deep_copy);
+            try map.put(key, val);
         }
 
         return map;
@@ -204,9 +164,26 @@ fn readValue(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerro
         },
         .@"struct" => |info| {
             if (T == Value.GStr or T == Value.GPath) {
-                return this.readString(T, deep_copy);
-            }
-            if (T == Value.GSig) {
+                // String reading: u32 len, bytes, null
+                if (this.pos + 4 > this.body.len) return error.EndOfBody;
+                const len = mem.readInt(u32, this.body[this.pos..][0..4], this.endian);
+                this.pos += 4;
+
+                if (this.pos + len + 1 > this.body.len) return error.EndOfBody;
+                // Verify null terminator
+                if (this.body[this.pos + len] != 0) return error.MissingNullTerminator;
+
+                const s = this.body[this.pos .. this.pos + len :0];
+                this.pos += len + 1;
+
+                if (deep_copy) {
+                    const new_s = try this.allocator.allocSentinel(u8, s.len, 0);
+                    @memcpy(new_s, s);
+                    return T.new(new_s);
+                } else {
+                    return T.new(s);
+                }
+            } else if (T == Value.GSig) {
                 // Signature reading: u8 len, bytes, null
                 if (this.pos + 1 > this.body.len) return error.EndOfBody;
                 const len = this.body[this.pos];
@@ -229,39 +206,50 @@ fn readValue(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerro
 
             // Generic struct/tuple/dict-entry support
             // DBus aligns structs and dict-entries to 8.
+            const is_dict_entry = info.field_names.len == 2 and (mem.eql(u8, info.field_names[0], "key") and mem.eql(u8, info.field_names[1], "value"));
             var result: T = undefined;
-            inline for (info.field_types, info.field_names) |field, name| {
-                this.alignTo(dbusAlignOf(field));
-                @field(result, name) = try this.readValue(field, deep_copy);
+            inline for (info.field_names, info.field_types) |FieldName, FieldType| {
+                this.alignTo(dbusAlignOf(FieldType));
+                if (is_dict_entry and (FieldType == []const u8 or FieldType == [:0]const u8 or FieldType == []u8 or FieldType == [:0]u8) and mem.eql(u8, FieldName, "key")) {
+                    if (this.pos + 4 > this.body.len) return error.EndOfBody;
+                    const len = mem.readInt(u32, this.body[this.pos..][0..4], this.endian);
+                    this.pos += 4;
+                    if (this.pos + len + 1 > this.body.len) return error.EndOfBody;
+                    if (this.body[this.pos + len] != 0) return error.MissingNullTerminator;
+                    const s = this.body[this.pos .. this.pos + len :0];
+                    this.pos += len + 1;
+                    if (deep_copy) {
+                        const new_s = try this.allocator.allocSentinel(u8, s.len, 0);
+                        @memcpy(new_s, s);
+                        @field(result, FieldName) = new_s;
+                    } else {
+                        @field(result, FieldName) = s;
+                    }
+                } else {
+                    @field(result, FieldName) = try this.readVal(FieldType, deep_copy);
+                }
             }
-
             return result;
         },
         .pointer => |info| {
             if (info.size != .slice) return error.UnsupportedType;
             const Elem = info.child;
 
-            this.alignTo(dbusAlignOf(u32));
-            const byte_len = try this.readValue(u32, false);
+            // Read byte length (u32)
+            const byte_len = try this.readVal(u32, false); // No need to deep copy length
 
+            // Align to element boundary
             this.alignTo(dbusAlignOf(Elem));
 
             const start_pos = this.pos;
             if (this.pos + byte_len > this.body.len) return error.EndOfBody;
 
             var list: ArrayList(Elem) = try .initCapacity(this.allocator, 0);
-            errdefer {
-                if (deep_copy) {
-                    for (list.items) |item| {
-                        freeValue(this.allocator, Elem, item);
-                    }
-                }
-                list.deinit(this.allocator);
-            }
+            errdefer list.deinit(this.allocator);
 
             while (this.pos - start_pos < byte_len) {
                 this.alignTo(dbusAlignOf(Elem));
-                try list.append(this.allocator, try this.readValue(Elem, deep_copy));
+                try list.append(this.allocator, try this.readVal(Elem, deep_copy));
             }
 
             return try list.toOwnedSlice(this.allocator);
@@ -269,24 +257,19 @@ fn readValue(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerro
         .@"union" => |info| {
             // Variants on wire: signature ('g'), then aligned value.
             const GSig = Value.GSig;
-            const inner_sig_struct = try this.readValue(GSig, false);
+            const inner_sig_struct = try this.readVal(GSig, false); // Signature borrowed is fine here for comparison
             const inner_sig = inner_sig_struct.s;
 
-            if (T == Value.GVariant) {
-                return this.readDynamicVariant(inner_sig, deep_copy);
-            }
+            if (T == Value.GVariant) return try this.readDynamicVariant(inner_sig, deep_copy);
 
-            inline for (info.field_types, info.field_names) |fld, name| {
-                const fld_sig_len = Value.reprLength(fld);
+            inline for (info.field_names, info.field_types) |FieldName, FieldType| {
+                const fld_sig_len = Value.reprLength(FieldType);
                 var fld_sig_buf: [256]u8 = undefined;
-                Value.getRepr(fld, fld_sig_len, 0, fld_sig_buf[0..fld_sig_len]);
+                Value.getRepr(FieldType, fld_sig_len, 0, fld_sig_buf[0..fld_sig_len]);
 
-                const matches_exactly = mem.eql(u8, inner_sig, fld_sig_buf[0..fld_sig_len]);
-                const matches_path_fallback = (fld == Value.GStr or fld == Value.GPath) and mem.eql(u8, inner_sig, "o") and mem.eql(u8, fld_sig_buf[0..fld_sig_len], "s");
-
-                if (matches_exactly or matches_path_fallback) {
-                    this.alignTo(dbusAlignOf(fld));
-                    return @unionInit(T, name, try this.readValue(fld, deep_copy));
+                if (mem.eql(u8, inner_sig, fld_sig_buf[0..fld_sig_len])) {
+                    this.alignTo(dbusAlignOf(FieldType));
+                    return @unionInit(T, FieldName, try this.readVal(FieldType, deep_copy));
                 }
             }
 
@@ -296,76 +279,76 @@ fn readValue(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerro
     }
 }
 
-pub fn readDynamicVariant(this: *Decoder, sig: []const u8, comptime deep_copy: bool) anyerror!Value.GVariant {
-    var sig_pos: usize = 0;
-    return this.readDynamicVariantInner(sig, &sig_pos, deep_copy);
+fn readDynamicVariant(this: *Decoder, sig: []const u8, comptime deep_copy: bool) anyerror!Value.GVariant {
+    var pos: usize = 0;
+    return this.readDynamicVariantInner(sig, &pos, deep_copy);
 }
 
-pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize, comptime deep_copy: bool) anyerror!Value.GVariant {
+fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize, comptime deep_copy: bool) anyerror!Value.GVariant {
     if (sig_pos.* >= sig.len) return error.SignatureEnd;
     const c = sig[sig_pos.*];
     sig_pos.* += 1;
     switch (c) {
         'y' => {
             this.alignTo(dbusAlignOf(u8));
-            return Value.GVariant{ .byte = try this.readValue(u8, deep_copy) };
+            return .{ .byte = try this.readVal(u8, deep_copy) };
         },
         'b' => {
             this.alignTo(dbusAlignOf(bool));
-            return Value.GVariant{ .boolean = try this.readValue(bool, deep_copy) };
+            return .{ .boolean = try this.readVal(bool, deep_copy) };
         },
         'n' => {
             this.alignTo(dbusAlignOf(i16));
-            return Value.GVariant{ .int16 = try this.readValue(i16, deep_copy) };
+            return .{ .int16 = try this.readVal(i16, deep_copy) };
         },
         'q' => {
             this.alignTo(dbusAlignOf(u16));
-            return Value.GVariant{ .uint16 = try this.readValue(u16, deep_copy) };
+            return .{ .uint16 = try this.readVal(u16, deep_copy) };
         },
         'i' => {
             this.alignTo(dbusAlignOf(i32));
-            return Value.GVariant{ .int32 = try this.readValue(i32, deep_copy) };
+            return .{ .int32 = try this.readVal(i32, deep_copy) };
         },
         'u' => {
             this.alignTo(dbusAlignOf(u32));
-            return Value.GVariant{ .uint32 = try this.readValue(u32, deep_copy) };
+            return .{ .uint32 = try this.readVal(u32, deep_copy) };
         },
         'x' => {
             this.alignTo(dbusAlignOf(i64));
-            return Value.GVariant{ .int64 = try this.readValue(i64, deep_copy) };
+            return .{ .int64 = try this.readVal(i64, deep_copy) };
         },
         't' => {
             this.alignTo(dbusAlignOf(u64));
-            return Value.GVariant{ .uint64 = try this.readValue(u64, deep_copy) };
+            return .{ .uint64 = try this.readVal(u64, deep_copy) };
         },
         'd' => {
             this.alignTo(dbusAlignOf(f64));
-            return Value.GVariant{ .double = try this.readValue(f64, deep_copy) };
+            return .{ .double = try this.readVal(f64, deep_copy) };
         },
         'h' => {
             this.alignTo(dbusAlignOf(Value.GUFd));
-            return Value.GVariant{ .ufd = try this.readValue(Value.GUFd, deep_copy) };
+            return .{ .ufd = try this.readVal(Value.GUFd, deep_copy) };
         },
         's' => {
             this.alignTo(dbusAlignOf(Value.GStr));
-            return Value.GVariant{ .string = try this.readValue(Value.GStr, deep_copy) };
+            return .{ .string = try this.readVal(Value.GStr, deep_copy) };
         },
         'o' => {
             this.alignTo(dbusAlignOf(Value.GPath));
-            return Value.GVariant{ .object_path = try this.readValue(Value.GPath, deep_copy) };
+            return .{ .object_path = try this.readVal(Value.GPath, deep_copy) };
         },
         'g' => {
             this.alignTo(dbusAlignOf(Value.GSig));
-            return Value.GVariant{ .signature = try this.readValue(Value.GSig, deep_copy) };
+            return .{ .signature = try this.readVal(Value.GSig, deep_copy) };
         },
         'v' => {
-            const inner_sig_struct = try this.readValue(Value.GSig, false);
+            const inner_sig_struct = try this.readVal(Value.GSig, false);
             const inner_sig = inner_sig_struct.s;
             const inner_v = try this.readDynamicVariant(inner_sig, deep_copy);
             if (deep_copy) {
                 const ptr = try this.allocator.create(Value.GVariant);
                 ptr.* = inner_v;
-                return Value.GVariant{ .variant = ptr };
+                return .{ .variant = ptr };
             } else {
                 return error.VariantCannotBeBorrowed;
             }
@@ -375,7 +358,7 @@ pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize,
             const is_dict = sig[sig_pos.*] == '{';
 
             this.alignTo(dbusAlignOf(u32));
-            const byte_len = try this.readValue(u32, false);
+            const byte_len = try this.readVal(u32, false);
 
             if (is_dict) {
                 this.alignTo(8);
@@ -385,14 +368,12 @@ pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize,
 
                 if (!deep_copy) return error.DictCannotBeBorrowed;
 
-                var dict = std.StringHashMap(Value.GVariant).init(this.allocator);
+                var dict: StringHashMap(Value.GVariant) = .init(this.allocator);
                 errdefer dict.deinit();
 
                 sig_pos.* += 1;
                 const key_type = sig[sig_pos.*];
-                if (key_type != 's' and key_type != 'o' and key_type != 'g') {
-                    return error.UnsupportedDictKeyType;
-                }
+                if (key_type != 's' and key_type != 'o' and key_type != 'g') return error.UnsupportedDictKeyType;
 
                 const dict_entry_sig_start = sig_pos.*;
 
@@ -400,12 +381,12 @@ pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize,
                     this.alignTo(8);
                     sig_pos.* = dict_entry_sig_start;
 
-                    const key_str = switch (sig[sig_pos.*]) {
-                        's', 'o', 'g' => blk: {
-                            sig_pos.* += 1;
-                            break :blk try this.readString([]const u8, deep_copy);
-                        },
-                        else => return error.UnsupportedDictKeyType,
+                    const key_variant = try this.readDynamicVariantInner(sig, sig_pos, deep_copy);
+                    const key_str = switch (key_variant) {
+                        .string => |s| s.s,
+                        .object_path => |o| o.s,
+                        .signature => |s| s.s,
+                        else => unreachable,
                     };
 
                     const val_variant = try this.readDynamicVariantInner(sig, sig_pos, deep_copy);
@@ -416,17 +397,17 @@ pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize,
                 }
 
                 if (byte_len == 0) {
-                    _ = try this.skipDynamicVariantInner(sig, sig_pos);
-                    _ = try this.skipDynamicVariantInner(sig, sig_pos);
+                    try this.skipDynamicVariantInner(sig, sig_pos); // skip key
+                    try this.skipDynamicVariantInner(sig, sig_pos); // skip val
                     if (sig_pos.* >= sig.len or sig[sig_pos.*] != '}') return error.ExpectedDictEnd;
-                    sig_pos.* += 1;
+                    sig_pos.* += 1; // skip '}'
                 } else {
                     sig_pos.* += 1;
                 }
 
-                return Value.GVariant{ .dict = dict };
+                return .{ .dict = dict };
             } else {
-                const elem_align = try this.alignOfDynamicType(sig, sig_pos.*);
+                const elem_align = try alignOfDynamicType(sig, sig_pos.*);
                 this.alignTo(elem_align);
 
                 const start_pos = this.pos;
@@ -434,7 +415,7 @@ pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize,
 
                 if (!deep_copy) return error.ArrayCannotBeBorrowed;
 
-                var list = try std.ArrayList(Value.GVariant).initCapacity(this.allocator, 0);
+                var list: ArrayList(Value.GVariant) = try .initCapacity(this.allocator, 0);
                 errdefer list.deinit(this.allocator);
 
                 const elem_sig_start = sig_pos.*;
@@ -446,27 +427,27 @@ pub fn readDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize,
                     try list.append(this.allocator, elem_v);
                 }
 
-                if (byte_len == 0) {
-                    _ = try this.skipDynamicVariantInner(sig, sig_pos);
-                }
+                if (byte_len == 0) _ = try this.skipDynamicVariantInner(sig, sig_pos);
 
-                return Value.GVariant{ .array = try list.toOwnedSlice(this.allocator) };
+                return .{ .array = try list.toOwnedSlice(this.allocator) };
             }
         },
         '(' => {
             this.alignTo(8);
             if (!deep_copy) return error.TupleCannotBeBorrowed;
-            var list = try std.ArrayList(Value.GVariant).initCapacity(this.allocator, 0);
+
+            var list: ArrayList(Value.GVariant) = try .initCapacity(this.allocator, 0);
             errdefer list.deinit(this.allocator);
 
             while (sig_pos.* < sig.len and sig[sig_pos.*] != ')') {
                 const elem_v = try this.readDynamicVariantInner(sig, sig_pos, deep_copy);
                 try list.append(this.allocator, elem_v);
             }
+
             if (sig_pos.* >= sig.len or sig[sig_pos.*] != ')') return error.ExpectedTupleEnd;
             sig_pos.* += 1;
 
-            return Value.GVariant{ .tuple = try list.toOwnedSlice(this.allocator) };
+            return .{ .tuple = try list.toOwnedSlice(this.allocator) };
         },
         else => return error.UnsupportedDynamicType,
     }
@@ -482,9 +463,8 @@ fn skipDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize) any
             return this.skipDynamicVariantInner(sig, sig_pos);
         },
         '(' => {
-            while (sig_pos.* < sig.len and sig[sig_pos.*] != ')') {
-                try this.skipDynamicVariantInner(sig, sig_pos);
-            }
+            while (sig_pos.* < sig.len and sig[sig_pos.*] != ')') try this.skipDynamicVariantInner(sig, sig_pos);
+
             if (sig_pos.* >= sig.len) return error.SignatureEnd;
             sig_pos.* += 1;
         },
@@ -498,8 +478,7 @@ fn skipDynamicVariantInner(this: *Decoder, sig: []const u8, sig_pos: *usize) any
     }
 }
 
-fn alignOfDynamicType(this: *Decoder, sig: []const u8, sig_pos: usize) anyerror!usize {
-    _ = this;
+fn alignOfDynamicType(sig: []const u8, sig_pos: usize) anyerror!usize {
     if (sig_pos >= sig.len) return error.SignatureEnd;
     switch (sig[sig_pos]) {
         'y', 'g', 'v' => return 1,
@@ -507,24 +486,5 @@ fn alignOfDynamicType(this: *Decoder, sig: []const u8, sig_pos: usize) anyerror!
         'i', 'u', 'b', 'h', 'a', 's', 'o' => return 4,
         'x', 't', 'd', '(', '{' => return 8,
         else => return error.UnsupportedDynamicType,
-    }
-}
-
-fn freeValue(allocator: Allocator, comptime T: type, value: T) void {
-    if (T == Value.GStr or T == Value.GPath or T == Value.GSig) {
-        allocator.free(value.s);
-    } else switch (@typeInfo(T)) {
-        .pointer => |info| {
-            if (info.size == .slice) {
-                for (value) |item| freeValue(allocator, info.child, item);
-                allocator.free(value);
-            }
-        },
-        .@"struct" => |info| {
-            inline for (info.field_types, info.field_names) |field, name| {
-                freeValue(allocator, field, @field(value, name));
-            }
-        },
-        else => {},
     }
 }

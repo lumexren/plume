@@ -17,32 +17,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
-/// Writes data to a D-Bus buffer, handling endianness and alignment.
 const DBusWriter = @This();
 
-const Value = @import("value/root.zig");
-
-const utils = @import("utils.zig");
-const convertInteger = utils.convertInteger;
+const Value = @import("Value.zig");
+const convertInteger = @import("../utils.zig").convertInteger;
 
 const std = @import("std");
-const lang = std.lang;
-const Endian = lang.Endian;
 const ArrayList = std.ArrayList;
-const mem = std.mem;
-const Allocator = mem.Allocator;
+const Allocator = std.mem.Allocator;
+const Endian = std.lang.Endian;
 
 allocator: Allocator,
 buffer: *ArrayList(u8),
 endian: Endian,
 body_start_offset: usize,
 
-/// Initializes a new DBusWriter with the given allocator, buffer, and endianness.
-pub inline fn init(allocator: Allocator, buffer: *ArrayList(u8), endian: Endian) DBusWriter {
+pub fn init(allocator: Allocator, buffer: *ArrayList(u8), endian: Endian) DBusWriter {
     return .{ .allocator = allocator, .buffer = buffer, .endian = endian, .body_start_offset = 0 };
 }
 
-/// Pads the buffer to the specified alignment boundary.
 pub fn padTo(this: *DBusWriter, @"align": usize) !void {
     if (@"align" <= 1) return;
     const abs_len = this.body_start_offset + this.buffer.items.len;
@@ -50,19 +43,16 @@ pub fn padTo(this: *DBusWriter, @"align": usize) !void {
     if (rem != 0) try this.buffer.appendNTimes(this.allocator, 0, @"align" - rem);
 }
 
-/// Writes an integer value in the writer's configured endianness.
 pub fn writeInt(this: *DBusWriter, comptime T: type, x: T) !void {
     const bytes = convertInteger(T, x, this.endian);
     try this.buffer.appendSlice(this.allocator, &bytes);
 }
 
-/// Writes a u32 value at a specific position in the buffer (used for patching array lengths).
 pub fn writeU32At(this: *DBusWriter, pos: usize, v: u32) void {
     var b: [4]u8 = convertInteger(u32, v, this.endian);
     @memcpy(this.buffer.items[pos .. pos + 4], &b);
 }
 
-/// Writes the D-Bus signature for a type in the 'g' format (u8 length, bytes, NUL).
 pub fn writeSignatureOf(this: *DBusWriter, comptime T: type) !void {
     const sig_len = Value.reprLength(T);
     if (sig_len > 255) return error.SignatureTooLong;

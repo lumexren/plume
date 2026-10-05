@@ -20,7 +20,7 @@
 /// Represents a handler for a D-Bus signal.
 const SignalHandler = @This();
 
-const Message = @import("message/root.zig");
+const Message = @import("Message.zig");
 
 interface: []const u8,
 member: []const u8,

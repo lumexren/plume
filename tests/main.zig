@@ -1,34 +1,54 @@
 const std = @import("std");
 
 const plume = @import("plume");
-const Message = plume.Message;
-const Connection = plume.Connection;
-const Decoder = plume.Decoder;
-const Encoder = plume.Encoder;
-const Proxy = plume.Proxy;
 const Value = plume.Value;
 const GStr = plume.Value.GStr;
 const GPath = plume.Value.GPath;
 const GVariant = plume.Value.GVariant;
+const Connection = plume.Connection;
+const Message = plume.Message;
+const Encoder = plume.Encoder;
+const Decoder = plume.Decoder;
+const Proxy = plume.Proxy;
 
 const UPowerProxy = @import("batteries.zig").UPowerProxy;
 const PropertiesProxy = @import("batteries.zig").PropertiesProxy;
 
-fn onPropertiesChanged(ctx: *u32, args: struct { GStr, std.StringHashMap(GVariant), []const GStr }) void {
-    _ = args;
-    ctx.* += 1;
-    std.debug.print("SIGNAL [Callback]: PropertiesChanged triggered! Count: {d}\n", .{ctx.*});
+fn printData(data: []const u8) void {
+    for (data) |x| {
+        if ((x >= 46 and x <= 57) or (x >= 65 and x <= 90) or (x >= 97 and x <= 122)) {
+            std.debug.print("{c}", .{x});
+        } else {
+            std.debug.print("\\{o}", .{x});
+        }
+    }
+    std.debug.print("\n", .{});
 }
 
-fn onDeviceAdded(ctx: *u32, args: struct { GPath }) void {
+// Signal handler callbacks for generated proxies
+fn onPropertiesChanged(
+    ctx: *u32,
+    args: @Tuple(&[_]type{ GStr, std.StringHashMap(GVariant), []const GStr }),
+) void {
     ctx.* += 1;
-    std.debug.print("SIGNAL [Callback]: DeviceAdded triggered! Path: {s}\n", .{args[0].s});
+    const interface_name = args[0];
+    const changed_props = args[1];
+    std.debug.print("SIGNAL [Typed Callback]: PropertiesChanged on '{s}' (count={d})\n", .{ interface_name.s, ctx.* });
+    var it = changed_props.iterator();
+    while (it.next()) |entry| {
+        std.debug.print("  - {s}\n", .{entry.key_ptr.*});
+    }
+}
+
+fn onDeviceAdded(ctx: *u32, args: @Tuple(&[_]type{GPath})) void {
+    ctx.* += 1;
+    std.debug.print("SIGNAL [Typed Callback]: DeviceAdded at '{s}' (count={d})\n", .{ args[0].s, ctx.* });
 }
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
-    var conn = try Connection.init(init.io, allocator, init.environ_map, .Session);
+    var conn: Connection = try .init(init.io, allocator, .Session, init.environ_map);
     defer conn.close();
 
     // Example 1: Call GetId (no args, returns string)
@@ -45,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
         defer conn.freeMessage(&reply);
 
         // Read response
-        var decoder: Decoder = .from(allocator, reply);
+        var decoder: Decoder = .fromMessage(allocator, reply);
         const id = try decoder.decode(GStr);
         std.debug.print("Bus ID: {s}\n", .{id.s});
     }
@@ -67,7 +87,7 @@ pub fn main(init: std.process.Init) !void {
         defer conn.freeMessage(&reply);
 
         // Read response
-        var decoder: Decoder = .from(allocator, reply);
+        var decoder: Decoder = .fromMessage(allocator, reply);
         const exists = try decoder.decode(bool);
         std.debug.print("NameHasOwner('org.freedesktop.DBus'): {}\n", .{exists});
     }
@@ -86,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
         defer conn.freeMessage(&reply);
 
         // Read response
-        var decoder: Decoder = .from(allocator, reply);
+        var decoder: Decoder = .fromMessage(allocator, reply);
         const names = try decoder.decode([]const GStr);
         defer allocator.free(names);
 
@@ -132,7 +152,7 @@ pub fn main(init: std.process.Init) !void {
     // Example 5: Using Proxy API
     {
         std.debug.print("\nTesting Proxy API...\n", .{});
-        const dbus_proxy = Proxy.init(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus");
+        const dbus_proxy: Proxy = .init(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus");
 
         // Call GetId via Proxy
         var result = try dbus_proxy.call("GetId", .{});
@@ -147,19 +167,10 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Proxy NameHasOwner: {}\n", .{has_owner});
     }
 
-    // Example 6: Listening to Signals via Generated Proxy Helpers
-    {
-        std.debug.print("\nExample 6: Subscribing to PropertiesChanged via generated proxy helper...\n", .{});
-        var signal_count: u32 = 0;
-        const props = PropertiesProxy.init(&conn);
-        try props.connectPropertiesChanged(&signal_count, onPropertiesChanged);
-        std.debug.print("Successfully subscribed to PropertiesChanged! (handler count={d})\n", .{conn.signal_handlers.items.len});
-    }
-
     // Example 7: Error Handling Test
     {
         std.debug.print("\nTesting Proxy Error Handling (calling non-existent method)...\n", .{});
-        const dbus_proxy = Proxy.init(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus");
+        const dbus_proxy: Proxy = .init(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus");
 
         _ = dbus_proxy.call("ThisMethodDoesNotExist", .{}) catch |err| {
             std.debug.print("Caught expected error: {any}\n", .{err});
@@ -169,7 +180,7 @@ pub fn main(init: std.process.Init) !void {
     // Example 8: Property Access Test
     {
         std.debug.print("\nTesting Property Access (Notifications Dnd)...\n", .{});
-        const noti_proxy = Proxy.init(&conn, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications");
+        const noti_proxy: Proxy = .init(&conn, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications");
 
         const NotiProp = union(enum) { Bool: bool, String: GStr };
         const dnd = noti_proxy.getProperty(NotiProp, "Dnd") catch NotiProp{ .Bool = false };
@@ -179,13 +190,12 @@ pub fn main(init: std.process.Init) !void {
     // Example 9: Owned Decoding Test
     {
         std.debug.print("\nTesting Owned Decoding (decodeAlloc)...\n", .{});
-        const dbus_proxy = Proxy.init(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus");
+        const dbus_proxy: Proxy = .init(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus");
         var result = try dbus_proxy.call("GetId", .{});
 
         var decoder = result.reader();
         // Decode and copy string
         const owned_id = try decoder.decodeAlloc(GStr);
-        defer allocator.free(owned_id.s);
 
         // owned_id should still be valid
         std.debug.print("Owned Bus ID (after deinit): {s}\n", .{owned_id.s});
@@ -194,12 +204,21 @@ pub fn main(init: std.process.Init) !void {
         result.deinit();
     }
 
+    // Example 6: Listening to Signals via Generated Proxy Helpers
+    {
+        std.debug.print("\nExample 6: Subscribing to PropertiesChanged via generated proxy helper...\n", .{});
+        var signal_count: u32 = 0;
+        const props: PropertiesProxy = .init(&conn);
+        try props.connectPropertiesChanged(&signal_count, onPropertiesChanged);
+        std.debug.print("Successfully subscribed to PropertiesChanged! (handler count={d})\n", .{conn.signal_handlers.items.len});
+    }
+
     // Example 10: Using Generated proxy
     {
-        var conn2 = try Connection.init(init.io, allocator, init.environ_map, .System);
+        var conn2: Connection = try .init(init.io, allocator, .System, init.environ_map);
         defer conn2.close();
 
-        const power = UPowerProxy.init(&conn2);
+        const power: UPowerProxy = .init(&conn2);
         var dev_count: u32 = 0;
         try power.connectDeviceAdded(&dev_count, onDeviceAdded);
         std.debug.print("\nExample 10: Subscribed to UPower DeviceAdded signal! (handler count={d})\n", .{conn2.signal_handlers.items.len});
@@ -228,7 +247,7 @@ pub fn main(init: std.process.Init) !void {
         defer conn.freeMessage(&reply);
 
         var mpris_name: ?[:0]const u8 = null;
-        var decoder = Decoder.from(allocator, reply);
+        var decoder: Decoder = .fromMessage(allocator, reply);
         const names = try decoder.decode([]const GStr);
         defer allocator.free(names);
 
@@ -242,7 +261,7 @@ pub fn main(init: std.process.Init) !void {
         if (mpris_name) |name| {
             std.debug.print("Found MPRIS service: {s}\n", .{name});
 
-            var encoder = try Encoder.encode(allocator, GStr.new("org.mpris.MediaPlayer2.Player"));
+            var encoder: Encoder = try .encode(allocator, GStr.new("org.mpris.MediaPlayer2.Player"));
             defer encoder.deinit();
 
             var prop_reply = conn.methodCall(
@@ -258,13 +277,13 @@ pub fn main(init: std.process.Init) !void {
             };
             defer conn.freeMessage(&prop_reply);
 
-            var arena = std.heap.ArenaAllocator.init(allocator);
+            var arena: std.heap.ArenaAllocator = .init(allocator);
             defer arena.deinit();
             const arena_alloc = arena.allocator();
 
-            var prop_decoder = Decoder.from(arena_alloc, prop_reply);
+            var prop_decoder: Decoder = .fromMessage(arena_alloc, prop_reply);
             const props = prop_decoder.decodeAlloc(std.StringHashMap(GVariant)) catch |err| {
-                std.debug.print("Failed to decode properties: {any}\n", .{err});
+                std.debug.print("Failed to decode properties (was the bug triggered ?): {any}\n", .{err});
                 return;
             };
 

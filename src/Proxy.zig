@@ -20,19 +20,16 @@
 /// A local representation of a remote D-Bus object.
 const Proxy = @This();
 
-const Value = @import("value/root.zig");
-const Message = @import("message/root.zig");
-const MethodResult = @import("MethodResult.zig");
 const Connection = @import("Connection.zig");
-const Decoder = @import("Decoder.zig");
+const MethodResult = @import("MethodResult.zig");
 const Encoder = @import("Encoder.zig");
-
+const Decoder = @import("Decoder.zig");
+const Value = @import("value/Value.zig");
 const GStr = Value.GStr;
-const GPath = Value.GPath;
-const GSig = Value.GSig;
-const GUFd = Value.GUFd;
+const Message = @import("Message.zig");
 
 const std = @import("std");
+const ArenaAllocator = std.heap.ArenaAllocator;
 
 connection: *Connection,
 destination: [:0]const u8,
@@ -56,14 +53,18 @@ pub fn rawCall(this: Proxy, interface: [:0]const u8, method: [:0]const u8, args:
 
     if (reply.isError()) {
         const err_name = reply.getErrorName() orelse "UnknownError";
-        var decoder: Decoder = .from(this.connection.allocator, reply);
+        var decoder: Decoder = .fromMessage(this.connection.allocator, reply);
         const err_msg = decoder.decode(GStr) catch GStr.new("(no error message)");
         std.debug.print("[plume] DBus Error: {s}: {s}\n", .{ err_name, err_msg.s });
         this.connection.freeMessage(@constCast(&reply));
         return error.RemoteError;
     }
 
-    return .{ .message = reply, .connection = this.connection, .allocator = this.connection.allocator };
+    return .{
+        .message = reply,
+        .connection = this.connection,
+        .arena = .init(this.connection.allocator),
+    };
 }
 
 /// Invokes a method on the remote object using the default interface.
@@ -81,8 +82,7 @@ pub fn getProperty(this: Proxy, comptime T: type, name: [:0]const u8) !T {
     var result = try this.rawCall("org.freedesktop.DBus.Properties", "Get", .{ GStr.new(this.interface), GStr.new(name) });
     defer result.deinit();
 
-    var dec: Decoder = .from(this.connection.allocator, result.message);
-    return try dec.decodeAlloc(T);
+    return try result.expectAlloc(T);
 }
 
 /// Helper to set a property value.
@@ -93,27 +93,26 @@ pub fn setProperty(this: Proxy, name: [:0]const u8, value: anytype) !void {
 }
 
 /// Subscribes to a D-Bus signal on this proxy's interface and registers a typed callback.
-/// `SignalArgs` must be a tuple representing the signal's argument types.
+/// `SignalArgs` must be a tuple representing the signal's argument types (e.g. `@Tuple(&[_]type{ GStr, u32 })`).
 pub fn connectSignal(this: Proxy, comptime SignalArgs: type, member: [:0]const u8, ctx: anytype, comptime callback: fn (@TypeOf(ctx), SignalArgs) void) !void {
-    const match = try this.connection.allocator.print("type='signal',interface='{s}',member='{s}'", .{ this.interface, member }, 0);
+    const match = try this.connection.allocator.printSentinel("type='signal',interface='{s}',member='{s}'", .{ this.interface, member }, 0);
     defer this.connection.allocator.free(match);
+
     try this.connection.addMatch(match);
 
     const Wrapper = struct {
-        fn handle(raw_ctx: ?*anyopaque, msg: Message) void {
+        fn handle(raw_ctx: ?*anyopaque, message: Message) void {
             const typed_ctx: @TypeOf(ctx) = @ptrCast(@alignCast(raw_ctx));
-            var arena = std.heap.ArenaAllocator.init(msg.allocator);
+
+            var arena: ArenaAllocator = .init(message.allocator orelse return);
             defer arena.deinit();
-            var dec = Decoder.from(arena.allocator(), msg);
+
+            var dec: Decoder = .fromMessage(arena.allocator(), message);
             const args = dec.decode(SignalArgs) catch return;
+
             callback(typed_ctx, args);
         }
     };
 
-    try this.connection.registerSignalHandler(
-        this.interface,
-        member,
-        Wrapper.handle,
-        @ptrCast(@alignCast(@constCast(ctx))),
-    );
+    try this.connection.registerSignalHandler(this.interface, member, Wrapper.handle, @ptrCast(@alignCast(@constCast(ctx))));
 }

@@ -20,29 +20,26 @@
 /// Represents a D-Bus message, including its header and body.
 const Message = @This();
 
-pub const Flag = @import("Flag.zig").Flag;
-pub const Header = @import("header/root.zig");
-pub const Type = Header.Type;
-
-const DBusWriter = @import("../DBusWriter.zig");
-const Value = @import("../value/root.zig");
-const dbusAlignOf = Value.dbusAlignOf;
+pub const MessageHeader = @import("MessageHeader.zig");
+pub const MessageType = MessageHeader.MessageType;
+pub const MessageFlag = MessageHeader.MessageFlag;
+pub const MessageHeaderField = MessageHeader.HeaderField;
+pub const MessageHeaderFieldCode = MessageHeader.HeaderFieldCode;
+pub const MessageHeaderFieldValue = MessageHeader.HeaderFieldValue;
+pub const MessageHeaderFieldValueTag = MessageHeader.HeaderFieldValueTag;
 
 const std = @import("std");
 const ArrayList = std.ArrayList;
 const mem = std.mem;
-const math = std.math;
 const Allocator = mem.Allocator;
-const lang = std.lang;
-const Endian = lang.Endian;
 
-header: Header,
+header: MessageHeader,
 body: []const u8,
-allocator: Allocator = undefined,
+allocator: ?Allocator = null,
 
 /// Creates a new Message.
-pub fn new(header: Header, body: []const u8) Message {
-    return .{ .header = header, .body = body, .allocator = undefined };
+pub fn new(header: MessageHeader, body: []const u8) Message {
+    return .{ .header = header, .body = body, .allocator = null };
 }
 
 /// Packs the message into its wire format.
@@ -76,7 +73,6 @@ pub fn isSignal(this: Message, interface: []const u8, member: []const u8) bool {
             else => {},
         }
     }
-
     return has_iface and has_member;
 }
 
@@ -91,6 +87,5 @@ pub fn getErrorName(this: Message) ?[]const u8 {
     for (this.header.header_fields) |f| {
         if (f.code == .ErrorName) return f.value.ErrorName;
     }
-
     return null;
 }

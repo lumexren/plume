@@ -17,46 +17,111 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
+/// Represents a connection to a D-Bus bus (session or system).
+/// Manages message sending, receiving, and object registration.
 const Connection = @This();
 
-const Decoder = @import("Decoder.zig");
-const Encoder = @import("Encoder.zig");
-const Value = @import("value/root.zig");
-const GStr = Value.GStr;
-const GPath = Value.GPath;
-const GSig = Value.GSig;
-const GUFd = Value.GUFd;
-const DBusWriter = @import("DBusWriter.zig");
-const Message = @import("message/root.zig");
-const MessageFlag = Message.Flag;
-const MessageHeader = Message.Header;
-const MessageHeaderType = MessageHeader.Type;
-const MessageHeaderField = MessageHeader.Field;
-const MessageHeaderFieldCode = MessageHeaderField.Code;
-const MessageHeaderFieldValue = MessageHeaderField.Value;
-const SocketIterator = @import("SocketIterator.zig");
+const Message = @import("Message.zig");
+const MessageQueue = @import("MessageQueue.zig");
+const MessageHeader = Message.MessageHeader;
+const MessageType = MessageHeader.MessageType;
+const MessageFlag = MessageHeader.MessageFlag;
+const MessageHeaderField = MessageHeader.HeaderField;
+const MessageHeaderFieldCode = MessageHeader.HeaderFieldCode;
+const MessageHeaderFieldValue = MessageHeader.HeaderFieldValue;
+const MessageHeaderFieldValueTag = MessageHeader.HeaderFieldValueTag;
 const InterfaceWrapper = @import("InterfaceWrapper.zig");
+const SocketIterator = @import("SocketIterator.zig");
 const SignalHandler = @import("SignalHandler.zig");
+const Value = @import("value/Value.zig");
+const DBusWriter = Value.DBusWriter;
+const Encoder = @import("Encoder.zig");
+
+const xml_generator = @import("xml_generator.zig");
+const dispatcher = @import("dispatcher.zig");
 
 const std = @import("std");
-const lang = std.lang;
-const Endian = lang.Endian;
-const ArrayList = std.ArrayList;
+const AutoHashMap = std.AutoHashMap;
 const StringHashMap = std.StringHashMap;
-const Io = std.Io;
-const Reader = Io.Reader;
-const net = Io.net;
+const ArrayList = std.ArrayList;
+const Thread = std.Thread;
+const Endian = std.lang.Endian;
 const os = std.os;
+const linux = os.linux;
 const process = std.process;
 const Environ = process.Environ;
 const Map = Environ.Map;
+const math = std.math;
+const Io = std.Io;
+const net = Io.net;
+const Mutex = Io.Mutex;
+const atomic = std.atomic;
+const posix = std.posix;
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const debug = std.debug;
-const meta = std.meta;
 
-const dispatcher = @import("dispatcher.zig");
-const xml_generator = @import("xml_generator.zig");
+pub const CallState = enum(u32) {
+    pending = 0,
+    completed = 1,
+    err = 2,
+};
+
+pub const PendingCall = struct {
+    state: atomic.Value(u32) = .init(@backingInt(CallState.pending)),
+    reply: ?Message = null,
+};
+
+pub fn MutexMap(comptime K: type, comptime V: type) type {
+    return struct {
+        map: AutoHashMap(K, V),
+        mutex: Mutex = .init,
+        io: Io,
+
+        pub fn init(io: Io, allocator: Allocator) @This() {
+            return .{ .map = .init(allocator), .io = io };
+        }
+
+        pub fn deinit(this: *@This()) void {
+            this.mutex.lockUncancelable(this.io);
+            defer this.mutex.unlock(this.io);
+            this.map.deinit();
+        }
+
+        pub fn put(this: *@This(), key: K, value: V) !void {
+            this.mutex.lockUncancelable(this.io);
+            defer this.mutex.unlock(this.io);
+            try this.map.put(key, value);
+        }
+
+        pub fn get(this: *@This(), key: K) ?V {
+            this.mutex.lockUncancelable(this.io);
+            defer this.mutex.unlock(this.io);
+            return this.map.get(key);
+        }
+
+        pub fn remove(this: *@This(), key: K) bool {
+            this.mutex.lockUncancelable(this.io);
+            defer this.mutex.unlock(this.io);
+            return this.map.remove(key);
+        }
+
+        pub fn wakeAllWithError(this: *@This()) void {
+            this.mutex.lockUncancelable(this.io);
+            defer this.mutex.unlock(this.io);
+            var it = this.map.valueIterator();
+            while (it.next()) |pending_ptr| {
+                pending_ptr.*.state.store(@backingInt(CallState.err), .release);
+                this.io.futexWake(u32, &pending_ptr.*.state.raw, 1);
+            }
+        }
+    };
+}
+
+/// Defines the concurrency/event-loop model for the connection.
+pub const Backend = enum {
+    threaded,
+    poll,
+};
 
 /// Specifies the type of D-Bus connection.
 pub const BusType = enum {
@@ -68,96 +133,103 @@ pub const BusType = enum {
     Accessibility,
 };
 
-const RequestNameFlags = enum(u32) {
-    None = 0,
-    AllowReplacement = 1,
-    ReplaceExisting = 2,
-    DoNotQueue = 4,
-};
-
-/// Represents a connection to a D-Bus bus (session or system).
-/// Manages message sending, receiving, and object registration.
+backend: Backend = .threaded,
 io: Io,
-stream: net.Stream,
+socket: net.Stream,
 allocator: Allocator,
 reader_buffer: []u8,
 reader: net.Stream.Reader,
-serial_counter: u32 = 1,
-pending_messages: ArrayList(Message),
+serial_counter: atomic.Value(u32) = .init(1),
+write_mutex: Mutex = .init,
+pending_calls: MutexMap(u32, *PendingCall),
+dispatch_queue: MessageQueue,
+worker_init_mutex: Mutex = .init,
+worker_thread: ?Thread = null,
+dispatch_thread: ?Thread = null,
+is_running: atomic.Value(bool),
+serve_futex: atomic.Value(u32),
+is_initialized: bool = false,
+signal_handlers_mutex: Mutex = .init,
 signal_handlers: ArrayList(SignalHandler),
 registered_interfaces: ArrayList(InterfaceWrapper),
 
-/// Initializes a new connection to the D-Bus bus.
-/// `bus_type`: The type of bus to connect to (.Session, .System, or .Accessibility).
-/// `io`: Mandatory [`std.Io`]
-/// `map`: Environment variables provided from the entry point
-pub fn init(io: Io, allocator: Allocator, map: *Map, bus_type: BusType) !Connection {
-    var socket_paths: SocketIterator = undefined;
-    var unix_addr: net.UnixAddress = undefined;
-    var allocated_path: ?[]u8 = null;
-    defer if (allocated_path) |p| allocator.free(p);
-
-    switch (bus_type) {
-        .Session => {
-            const bus_address = map.get("DBUS_SESSION_BUS_ADDRESS") orelse return error.EnvVarNotFound;
-            socket_paths = .init(bus_address);
-        },
-        .System => {
-            if (map.get("DBUS_SYSTEM_BUS_ADDRESS")) |addr| {
-                socket_paths = .init(addr);
-            } else {
-                socket_paths = .init("unix:path=/var/run/dbus/system_bus_socket");
-            }
-        },
-        .Accessibility => {
-            if (map.get("AT_SPI_BUS_ADDRESS")) |addr| {
-                socket_paths = .init(addr);
-            } else {
-                const uid = os.linux.getuid();
-                allocated_path = try allocator.print("unix:path=/run/user/{d}/at-spi/bus_0", .{uid});
-                socket_paths = .init(allocated_path.?);
-            }
-        },
-    }
-
-    while (socket_paths.next()) |path| {
-        unix_addr = net.UnixAddress.init(path) catch continue;
-        break;
-    } else {
-        return error.NoValidAddressFound;
-    }
-
-    const reader_buf = try allocator.alloc(u8, 4096 * 10);
-    errdefer allocator.free(reader_buf);
-
-    const socket = try unix_addr.connect(io);
-
-    var connection: Connection = .{
-        .stream = socket,
-        .allocator = allocator,
-        .reader_buffer = reader_buf,
-        .io = io,
-        .pending_messages = try .initCapacity(allocator, 10),
-        .signal_handlers = try .initCapacity(allocator, 0),
-        .registered_interfaces = try .initCapacity(allocator, 0),
-        .reader = socket.reader(io, reader_buf),
-    };
-
-    try connection.auth();
-    try connection.sayHello();
-
-    return connection;
+pub fn nextSerial(this: *Connection) u32 {
+    return this.serial_counter.fetchAdd(1, .monotonic);
 }
 
-/// Performs the D-Bus authentication handshake (SASL EXTERNAL) over the socket connection (internal).
+/// Returns the underlying socket file descriptor for integration with external event loops.
+pub fn getFd(this: *const Connection) posix.fd_t {
+    return this.socket.socket.handle;
+}
+
+/// Checks if there is pending data to read, either buffered in user-space or ready in the kernel socket.
+pub fn hasDataToRead(this: *Connection) bool {
+    if (this.reader.interface.end > this.reader.interface.seek) return true;
+
+    var pfd = [1]posix.pollfd{.{
+        .fd = this.getFd(),
+        .events = posix.POLL.IN,
+        .revents = 0,
+    }};
+
+    const n = posix.poll(&pfd, 0) catch return false;
+    return n > 0 and (pfd[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) != 0;
+}
+
+/// Dispatches a single pending message if available without blocking.
+/// Returns true if a message was dispatched, false if no data was available.
+pub fn dispatch(this: *Connection) !bool {
+    if (!this.hasDataToRead()) return false;
+
+    const msg = try this.readNextMessage();
+    if (msg.header.message_type == .MethodReturn or msg.header.message_type == .Error) {
+        var reply_serial: ?u32 = null;
+        for (msg.header.header_fields) |f| {
+            if (f.code == .ReplySerial) {
+                reply_serial = f.value.ReplySerial;
+                break;
+            }
+        }
+
+        if (reply_serial) |serial| {
+            if (this.pending_calls.get(serial)) |pending| {
+                pending.reply = msg;
+                pending.state.store(@backingInt(CallState.completed), .release);
+                this.io.futexWake(u32, &pending.state.raw, 1);
+                return true;
+            }
+        }
+
+        this.freeMessage(@constCast(&msg));
+
+        return true;
+    }
+
+    try this.dispatchUnsolicited(msg);
+
+    return true;
+}
+
+fn writeMessageBytes(this: *Connection, bytes: []const u8) !void {
+    this.write_mutex.lockUncancelable(this.io);
+    defer this.write_mutex.unlock(this.io);
+
+    var writer_buffer: [2048]u8 = undefined;
+    var writer = this.socket.writer(this.io, &writer_buffer);
+    var io_writer = &writer.interface;
+
+    try io_writer.writeAll(bytes);
+    try io_writer.flush();
+}
+
 fn auth(this: *Connection) !void {
     var io_reader = &this.reader.interface;
 
     var writer_buffer: [2048]u8 = undefined;
-    var writer = this.stream.writer(this.io, &writer_buffer);
+    var writer = this.socket.writer(this.io, &writer_buffer);
     var io_writer = &writer.interface;
 
-    const uid: u32 = os.linux.getuid();
+    const uid: u32 = linux.getuid();
     var uid_buf: [32]u8 = undefined;
     const uid_str = try mem.print(&uid_buf, "{}", .{uid});
 
@@ -178,30 +250,109 @@ fn auth(this: *Connection) !void {
     try io_writer.flush();
 
     const response = try io_reader.takeDelimiterInclusive('\n');
-    if (!mem.startsWith(u8, response, "OK")) {
-        return error.HandshakeFail;
-    }
+    if (!mem.startsWith(u8, response, "OK")) return error.HandshakeFail;
 
     try io_writer.print("BEGIN\r\n", .{});
     try io_writer.flush();
 }
 
-/// Sends the D-Bus Hello method call to obtain a unique bus name (internal).
+/// Initializes a new connection to the D-Bus bus using the default threaded backend.
+/// `bus_type`: The type of bus to connect to (.Session, .System, or .Accessibility).
+/// `io`: Mandatory [`Io`]
+/// `vars`: Environment variables provided from the entry point
+pub fn init(io: Io, allocator: Allocator, bus_type: BusType, vars: *Map) !Connection {
+    return initWithBackend(io, allocator, bus_type, vars, .threaded);
+}
+
+/// Initializes a new connection to the D-Bus bus with the specified backend (.threaded or .poll).
+pub fn initWithBackend(io: Io, allocator: Allocator, bus_type: BusType, vars: *Map, backend: Backend) !Connection {
+    var socket_paths: SocketIterator = undefined;
+    var unix_addr: net.UnixAddress = undefined;
+    var allocated_path: ?[]u8 = null;
+    defer if (allocated_path) |p| allocator.free(p);
+
+    switch (bus_type) {
+        .Session => {
+            const bus_address = vars.get("DBUS_SESSION_BUS_ADDRESS") orelse return error.EnvVarNotFound;
+            socket_paths = .init(bus_address);
+        },
+        .System => {
+            if (vars.get("DBUS_SYSTEM_BUS_ADDRESS")) |addr| {
+                socket_paths = .init(addr);
+            } else {
+                socket_paths = .init("unix:path=/var/run/dbus/system_bus_socket");
+            }
+        },
+        .Accessibility => {
+            if (vars.get("AT_SPI_BUS_ADDRESS")) |addr| {
+                socket_paths = .init(addr);
+            } else {
+                const uid = linux.getuid();
+                allocated_path = try allocator.print("unix:path=/run/user/{d}/at-spi/bus_0", .{uid});
+                socket_paths = .init(allocated_path.?);
+            }
+        },
+    }
+
+    while (socket_paths.next()) |path| {
+        unix_addr = net.UnixAddress.init(path) catch continue;
+        break;
+    } else {
+        return error.NoValidAddressFound;
+    }
+
+    const reader_buf = try allocator.alloc(u8, 4096 * 10);
+    errdefer allocator.free(reader_buf);
+
+    const socket = try unix_addr.connect(io);
+
+    var connection: Connection = .{
+        .backend = backend,
+        .socket = socket,
+        .allocator = allocator,
+        .reader_buffer = reader_buf,
+        .io = io,
+        .serial_counter = .init(1),
+        .write_mutex = .init,
+        .pending_calls = .init(io, allocator),
+        .dispatch_queue = .init(io, allocator),
+        .worker_init_mutex = .init,
+        .worker_thread = null,
+        .dispatch_thread = null,
+        .is_running = .init(false),
+        .serve_futex = .init(0),
+        .signal_handlers = try .initCapacity(allocator, 0),
+        .registered_interfaces = try .initCapacity(allocator, 0),
+        .reader = socket.reader(io, reader_buf),
+    };
+
+    try connection.auth();
+
+    connection.sayHello() catch |err| {
+        connection.close();
+        return err;
+    };
+
+    connection.is_initialized = true;
+    connection.is_running.store(true, .release);
+
+    return connection;
+}
+
 fn sayHello(this: *Connection) !void {
-    const serial = this.serial_counter;
-    defer this.serial_counter += 1;
+    const serial = this.nextSerial();
 
     const header: MessageHeader = .{
         .message_type = .MethodCall,
-        .flags = @intFromEnum(MessageFlag.__EMPTY),
+        .flags = @backingInt(MessageFlag.__EMPTY),
         .proto_version = 1,
         .body_length = 0,
         .serial = serial,
         .header_fields = @constCast(&[_]MessageHeaderField{
-            .{ .code = MessageHeaderFieldCode.Path, .value = .{ .Path = "/org/freedesktop/DBus" } },
-            .{ .code = MessageHeaderFieldCode.Destination, .value = .{ .Destination = "org.freedesktop.DBus" } },
-            .{ .code = MessageHeaderFieldCode.Interface, .value = .{ .Interface = "org.freedesktop.DBus" } },
-            .{ .code = MessageHeaderFieldCode.Member, .value = .{ .Member = "Hello" } },
+            .{ .code = .Path, .value = .{ .Path = "/org/freedesktop/DBus" } },
+            .{ .code = .Destination, .value = .{ .Destination = "org.freedesktop.DBus" } },
+            .{ .code = .Interface, .value = .{ .Interface = "org.freedesktop.DBus" } },
+            .{ .code = .Member, .value = .{ .Member = "Hello" } },
         }),
     };
 
@@ -216,55 +367,78 @@ fn sayHello(this: *Connection) !void {
     defer this.freeMessage(&response);
 }
 
-/// This function closes the underlined socket
+/// This function closes the underlying socket and terminates background threads.
 pub fn close(this: *Connection) void {
-    for (this.pending_messages.items) |*message| {
-        this.freeMessage(message);
+    this.is_running.store(false, .release);
+    this.dispatch_queue.wakeAll();
+
+    this.socket.shutdown(this.io, .recv) catch {};
+    this.socket.close(this.io);
+
+    if (this.worker_thread) |thread| {
+        thread.join();
+        this.worker_thread = null;
     }
 
-    this.pending_messages.deinit(this.allocator);
+    if (this.dispatch_thread) |thread| {
+        thread.join();
+        this.dispatch_thread = null;
+    }
+
+    this.serve_futex.store(1, .release);
+    this.io.futexWake(u32, &this.serve_futex.raw, math.maxInt(u32));
+
+    this.pending_calls.wakeAllWithError();
+    this.pending_calls.deinit();
+    this.dispatch_queue.deinit(this);
+
     this.signal_handlers.deinit(this.allocator);
 
-    for (this.registered_interfaces.items) |*wrapper| {
-        wrapper.destroy(wrapper, this.allocator);
-    }
+    for (this.registered_interfaces.items) |*wrapper| wrapper.destroy(wrapper, this.allocator);
 
     this.registered_interfaces.deinit(this.allocator);
 
     this.allocator.free(this.reader_buffer);
-    this.stream.close(this.io);
 }
+
+const RequestNameFlags = enum(u32) {
+    None = 0,
+    AllowReplacement = 1,
+    ReplaceExisting = 2,
+    DoNotQueue = 4,
+};
 
 /// Requests a well-known name on the bus.
 pub fn requestName(this: *Connection, name: [:0]const u8) !void {
     const Str = Value.String();
     const U32 = Value.Uint32();
 
-    const serial = this.serial_counter;
-    defer this.serial_counter += 1;
+    const serial = this.nextSerial();
 
     var body_arr: ArrayList(u8) = try .initCapacity(this.allocator, 256);
     defer body_arr.deinit(this.allocator);
 
     var dwriter: DBusWriter = .init(this.allocator, &body_arr, .little);
 
-    const flags = @intFromEnum(RequestNameFlags.DoNotQueue) | @intFromEnum(RequestNameFlags.ReplaceExisting);
+    const flags =
+        @backingInt(RequestNameFlags.DoNotQueue) |
+        @backingInt(RequestNameFlags.ReplaceExisting);
 
     try Str.new(name).ser(&dwriter);
     try U32.new(flags).ser(&dwriter);
 
     const header: MessageHeader = .{
         .message_type = .MethodCall,
-        .flags = flags,
+        .flags = 0,
         .proto_version = 1,
         .body_length = @intCast(body_arr.items.len),
         .serial = serial,
         .header_fields = @constCast(&[_]MessageHeaderField{
-            .{ .code = MessageHeaderFieldCode.Destination, .value = .{ .Destination = "org.freedesktop.DBus" } },
-            .{ .code = MessageHeaderFieldCode.Interface, .value = .{ .Interface = "org.freedesktop.DBus" } },
-            .{ .code = MessageHeaderFieldCode.Path, .value = .{ .Path = "/org/freedesktop/DBus" } },
-            .{ .code = MessageHeaderFieldCode.Member, .value = .{ .Member = "RequestName" } },
-            .{ .code = MessageHeaderFieldCode.Signature, .value = .{ .Signature = "su" } },
+            .{ .code = .Destination, .value = .{ .Destination = "org.freedesktop.DBus" } },
+            .{ .code = .Interface, .value = .{ .Interface = "org.freedesktop.DBus" } },
+            .{ .code = .Path, .value = .{ .Path = "/org/freedesktop/DBus" } },
+            .{ .code = .Member, .value = .{ .Member = "RequestName" } },
+            .{ .code = .Signature, .value = .{ .Signature = "su" } },
         }),
     };
 
@@ -278,10 +452,9 @@ pub fn requestName(this: *Connection, name: [:0]const u8) !void {
 
     if (response.header.message_type == .Error) {
         for (response.header.header_fields) |f| {
-            if (f.code == .ErrorName) {
-                debug.print("[plume] RequestName failed with ErrorName: {s}\n", .{f.value.ErrorName});
-            }
+            if (f.code == .ErrorName) std.debug.print("[plume] RequestName failed with ErrorName: {s}\n", .{f.value.ErrorName});
         }
+        return error.RequestNameFailed;
     }
 }
 
@@ -290,25 +463,21 @@ pub fn sendMessage(this: *Connection, message: Message) !void {
     var bytes = try message.pack(this.allocator);
     defer bytes.deinit(this.allocator);
 
-    var writer_buffer: [2048]u8 = undefined;
-    var writer_stream = this.stream.writer(this.io, &writer_buffer);
-    var writer = &writer_stream.interface;
-
-    try writer.writeAll(bytes.items);
-    try writer.flush();
+    try this.writeMessageBytes(bytes.items);
 }
 
 /// Registers an object (interface implementation) at a specific path.
 /// The struct T must have an `init` method.
 /// `bus_name`: The well-known name to request on the bus.
 /// `path`: The object path to export this interface at.
-pub fn registerObject(this: *Connection, comptime T: type, bus_name: [:0]const u8, path: [:0]const u8, userData: anytype) !usize {
+pub fn registerObject(this: *Connection, comptime T: type, bus_name: [:0]const u8, path: [:0]const u8, userData: anytype) !void {
     try this.requestName(bus_name);
 
     const interface_name = if (@hasDecl(T, "INTERFACE_NAME")) T.INTERFACE_NAME else if (@hasDecl(T, "REQUESTED_NAME")) T.REQUESTED_NAME else bus_name;
 
     // Instantiate
     var instance_ptr = try this.allocator.create(T);
+    errdefer this.allocator.destroy(instance_ptr);
     // We assume init signature: fn init(conn: *Connection, userData: anytype) T
     instance_ptr.* = T.init(this, userData);
 
@@ -324,6 +493,7 @@ pub fn registerObject(this: *Connection, comptime T: type, bus_name: [:0]const u
 
     // Generate Introspection XML
     const intro_xml = try xml_generator.generateIntrospectionXml(this.allocator, T, interface_name);
+    errdefer this.allocator.free(intro_xml);
 
     // Create wrapper
     const wrapper: InterfaceWrapper = .{
@@ -333,28 +503,20 @@ pub fn registerObject(this: *Connection, comptime T: type, bus_name: [:0]const u
         .intro_xml = intro_xml,
         .destroy = struct {
             fn destroy(w: *const InterfaceWrapper, allocator: Allocator) void {
-                const this_ptr = @as(*T, @ptrCast(@alignCast(w.instance)));
-                allocator.destroy(this_ptr);
+                const self_ptr = @as(*T, @ptrCast(@alignCast(w.instance)));
+                allocator.destroy(self_ptr);
                 allocator.free(w.intro_xml);
             }
         }.destroy,
         .dispatch = dispatcher.getDispatchFn(T),
     };
 
-    errdefer {
-        this.allocator.destroy(instance_ptr);
-        this.allocator.free(intro_xml);
-    }
-
     try this.registered_interfaces.append(this.allocator, wrapper);
-
-    return this.registered_interfaces.items.len - 1;
 }
 
 /// Sends a reply to a method call.
-pub fn sendReply(this: *Connection, message: Message, enc: Encoder) !void {
+pub fn sendReply(this: *Connection, m: Message, encoder: Encoder) !void {
     var reply_fields: ArrayList(MessageHeaderField) = try .initCapacity(this.allocator, 3);
-
     defer {
         for (reply_fields.items) |f| {
             switch (f.value) {
@@ -366,43 +528,42 @@ pub fn sendReply(this: *Connection, message: Message, enc: Encoder) !void {
         reply_fields.deinit(this.allocator);
     }
 
-    try reply_fields.append(this.allocator, .{ .code = .ReplySerial, .value = .{ .ReplySerial = message.header.serial } });
+    try reply_fields.append(this.allocator, .{ .code = .ReplySerial, .value = .{ .ReplySerial = m.header.serial } });
 
     var dst: ?[:0]const u8 = null;
-    for (message.header.header_fields) |f| if (f.code == .Sender) {
+    for (m.header.header_fields) |f| if (f.code == .Sender) {
         dst = f.value.Sender;
     };
 
     if (dst) |d| {
-        const dest_dup = try this.allocator.dupeSentinel(u8, d, 0);
-        errdefer this.allocator.free(dest_dup);
-        try reply_fields.append(this.allocator, .{ .code = .Destination, .value = .{ .Destination = dest_dup } });
+        try reply_fields.append(this.allocator, .{ .code = .Destination, .value = .{ .Destination = try this.allocator.dupeSentinel(u8, d, 0) } });
     } else {
-        debug.print("WARN: No Sender in request, reply has no Destination!\n", .{});
+        std.debug.print("WARN: No Sender in request, reply has no Destination!\n", .{});
     }
 
-    const sig_dup = try this.allocator.dupeSentinel(u8, enc.signature(), 0);
-    errdefer this.allocator.free(sig_dup);
-    try reply_fields.append(this.allocator, .{ .code = .Signature, .value = .{ .Signature = sig_dup } });
+    try reply_fields.append(this.allocator, .{
+        .code = .Signature,
+        .value = .{
+            .Signature = try this.allocator.dupeSentinel(u8, encoder.signature(), 0),
+        },
+    });
 
+    const serial = this.nextSerial();
     const reply_h: MessageHeader = .{
         .message_type = .MethodReturn,
         .flags = 0,
         .proto_version = 1,
-        .body_length = @intCast(enc.body().len),
-        .serial = this.serial_counter,
+        .body_length = @intCast(encoder.body().len),
+        .serial = serial,
         .header_fields = reply_fields.items,
     };
 
-    this.serial_counter += 1;
-
-    try this.sendMessage(Message.new(reply_h, enc.body()));
+    try this.sendMessage(Message.new(reply_h, encoder.body()));
 }
 
 /// Sends an Error reply to a message.
 pub fn sendError(this: *Connection, m: Message, error_name: [:0]const u8, error_msg: [:0]const u8) !void {
     var reply_fields: ArrayList(MessageHeaderField) = try .initCapacity(this.allocator, 4);
-
     defer {
         for (reply_fields.items) |f| {
             switch (f.value) {
@@ -425,137 +586,218 @@ pub fn sendError(this: *Connection, m: Message, error_name: [:0]const u8, error_
     if (dst) |d| {
         try reply_fields.append(this.allocator, .{ .code = .Destination, .value = .{ .Destination = try this.allocator.dupeSentinel(u8, d, 0) } });
     } else {
-        debug.print("WARN: No Sender in request, error reply has no Destination!\n", .{});
+        std.debug.print("WARN: No Sender in request, error reply has no Destination!\n", .{});
     }
 
-    var encoder: Encoder = try .encode(this.allocator, GStr.new(error_msg));
+    var encoder: Encoder = try .encode(this.allocator, Value.GStr.new(error_msg));
     defer encoder.deinit();
 
-    try reply_fields.append(this.allocator, .{ .code = .Signature, .value = .{ .Signature = try this.allocator.dupeSentinel(u8, encoder.signature(), 0) } });
+    try reply_fields.append(this.allocator, .{
+        .code = .Signature,
+        .value = .{
+            .Signature = try this.allocator.dupeSentinel(u8, encoder.signature(), 0),
+        },
+    });
 
+    const serial = this.nextSerial();
     const reply_h: MessageHeader = .{
         .message_type = .Error,
         .flags = 0,
         .proto_version = 1,
         .body_length = @intCast(encoder.body().len),
-        .serial = this.serial_counter,
+        .serial = serial,
         .header_fields = reply_fields.items,
     };
-
-    this.serial_counter += 1;
 
     try this.sendMessage(Message.new(reply_h, encoder.body()));
 }
 
-/// Runs the main loop, blocking and handling messages for the registered objects.
-pub fn waitOnHandle(this: *Connection, handle: usize) !void {
-    if (handle >= this.registered_interfaces.items.len) return error.InvalidHandle;
+pub fn ensureWorkersStarted(this: *Connection) !void {
+    if (this.backend != .threaded) return;
+    if (this.worker_thread != null) return;
+    this.worker_init_mutex.lockUncancelable(this.io);
+    defer this.worker_init_mutex.unlock(this.io);
+    if (this.worker_thread == null) {
+        this.is_running.store(true, .release);
+        const dt = try Thread.spawn(.{}, dispatchLoop, .{this});
+        errdefer {
+            this.is_running.store(false, .release);
+            this.dispatch_queue.wakeAll();
+            dt.join();
+        }
 
-    while (true) {
-        var msg = try this.waitMessage();
-        defer this.freeMessage(&msg);
+        this.dispatch_thread = dt;
 
-        if (msg.header.message_type == .MethodCall) {
-            // Check interface and path
-            var iface: ?[]const u8 = null;
-            var path: ?[]const u8 = null;
-            var member: ?[]const u8 = null;
-            for (msg.header.header_fields) |f| {
-                if (f.code == .Interface) iface = f.value.Interface;
-                if (f.code == .Path) path = f.value.Path;
-                if (f.code == .Member) member = f.value.Member;
-            }
+        const wt = try Thread.spawn(.{}, workerLoop, .{this});
+        this.worker_thread = wt;
+    }
+}
 
-            if (path) |p| {
-                var handled = false;
-                for (this.registered_interfaces.items) |*w| {
-                    // Check path first
-                    if (mem.eql(u8, w.path, p)) {
-                        // Then check interface or Introspectable
-                        if (iface) |i| {
-                            if (mem.eql(u8, w.interface_name, i) or
-                                mem.eql(u8, i, "org.freedesktop.DBus.Introspectable") or
-                                mem.eql(u8, i, "org.freedesktop.DBus.Properties"))
-                            {
-                                // Dispatch
-                                try w.dispatch(w, this, msg);
-                                handled = true;
-                            }
-                        } else {
-                            // Fallback dispatch
-                            try w.dispatch(w, this, msg);
-                            handled = true;
+fn dispatchLoop(this: *Connection) void {
+    while (this.is_running.load(.acquire)) {
+        const message = this.dispatch_queue.popOrWait(&this.is_running) orelse break;
+        this.dispatchUnsolicited(message) catch {};
+    }
+}
+
+/// Runs the main loop, sleeping securely while background threads handle messages.
+pub fn serve(this: *Connection) !void {
+    if (this.backend == .poll) return error.InvalidBackend;
+    if (this.is_initialized) try this.ensureWorkersStarted();
+
+    this.serve_futex.store(0, .release);
+    while (this.is_running.load(.acquire)) this.io.futexWaitUncancelable(u32, &this.serve_futex.raw, 0);
+}
+
+fn dispatchUnsolicited(this: *Connection, message: Message) !void {
+    defer this.freeMessage(@constCast(&message));
+
+    if (message.header.message_type == .Signal) {
+        this.signal_handlers_mutex.lockUncancelable(this.io);
+        defer this.signal_handlers_mutex.unlock(this.io);
+
+        for (this.signal_handlers.items) |handler| {
+            if (message.isSignal(handler.interface, handler.member)) handler.callback(handler.ctx, message);
+        }
+
+        return;
+    }
+
+    if (message.header.message_type == .MethodCall) {
+        // Check interface and path
+        var iface: ?[]const u8 = null;
+        var path: ?[]const u8 = null;
+        var member: ?[]const u8 = null;
+        for (message.header.header_fields) |f| {
+            if (f.code == .Interface) iface = f.value.Interface;
+            if (f.code == .Path) path = f.value.Path;
+            if (f.code == .Member) member = f.value.Member;
+        }
+
+        if (path) |p| {
+            var handled = false;
+            var intro_interfaces: ArrayList(u8) = .empty;
+            defer intro_interfaces.deinit(this.allocator);
+
+            for (this.registered_interfaces.items) |*w| {
+                // Check path first
+                if (mem.eql(u8, w.path, p)) {
+                    // Then check interface or Introspectable
+                    if (iface) |i| {
+                        if (mem.eql(u8, i, "org.freedesktop.DBus.Introspectable") and member != null and mem.eql(u8, member.?, "Introspect")) {
+                            // Introspection needs a little special handling, because there may be multiple
+                            // interfaces implemented by the object, and we have to return all of them.
+
+                            // Begin the XML if this is the first interface
+                            if (intro_interfaces.items.len == 0) try intro_interfaces.appendSlice(this.allocator, xml_generator.xml_prelude);
+
+                            try intro_interfaces.appendSlice(this.allocator, w.intro_xml);
+                        } else if (mem.eql(u8, w.interface_name, i) or mem.eql(u8, i, "org.freedesktop.DBus.Properties")) {
+                            // Dispatch
+                            const dispatch_result = try w.dispatch(w, this, message);
+                            handled = dispatch_result == .dispatched;
                         }
+                    } else {
+                        // Fallback dispatch
+                        const dispatch_result = try w.dispatch(w, this, message);
+                        handled = dispatch_result == .dispatched;
                     }
                 }
+            }
 
-                // Dynamic Introspection logic
-                if (!handled) {
-                    if (member) |m| {
-                        if (mem.eql(u8, m, "Introspect") and (iface == null or mem.eql(u8, iface.?, "org.freedesktop.DBus.Introspectable"))) {
-                            // Check for children
-                            var children_xml: ArrayList(u8) = try .initCapacity(this.allocator, 256);
-                            defer children_xml.deinit(this.allocator);
+            // Handle static introspection
+            if (intro_interfaces.items.len != 0) {
+                // Wrap up the XML
+                try intro_interfaces.appendSlice(this.allocator, xml_generator.xml_postlude);
+                const xml = try intro_interfaces.toOwnedSliceSentinel(this.allocator, 0);
+                defer this.allocator.free(xml);
 
-                            // We need a set to avoid duplicates
-                            var seen_children: StringHashMap(void) = .init(this.allocator);
-                            defer seen_children.deinit();
+                var encoder: Encoder = try .encode(this.allocator, Value.GStr.new(xml));
+                defer encoder.deinit();
 
-                            for (this.registered_interfaces.items) |*w| {
-                                if (mem.startsWith(u8, w.path, p)) {
-                                    if (w.path.len > p.len) {
-                                        var child_name: []const u8 = "";
-                                        if (mem.eql(u8, p, "/")) {
-                                            // Special case root
-                                            if (w.path.len > 1) {
-                                                const sub = w.path[1..];
-                                                if (mem.findScalar(u8, sub, '/')) |idx| {
-                                                    child_name = sub[0..idx];
-                                                } else {
-                                                    child_name = sub;
-                                                }
-                                            }
-                                        } else {
-                                            // Check if w.path[p.len] == '/'
-                                            if (w.path[p.len] == '/') {
-                                                const sub = w.path[p.len + 1 ..];
-                                                if (mem.findScalar(u8, sub, '/')) |idx| {
-                                                    child_name = sub[0..idx];
-                                                } else {
-                                                    child_name = sub;
-                                                }
+                try this.sendReply(message, encoder);
+                handled = true;
+            }
+
+            // Handle GetAll when no interfaces match
+            if (!handled and iface != null and mem.eql(u8, iface.?, "org.freedesktop.DBus.Properties") and member != null and mem.eql(u8, member.?, "GetAll")) {
+                var dict: StringHashMap(Value.GVariant) = .init(this.allocator);
+                defer dict.deinit();
+
+                var encoder: Encoder = try .encode(this.allocator, dict);
+                defer encoder.deinit();
+
+                try this.sendReply(message, encoder);
+
+                handled = true;
+            }
+
+            // Dynamic Introspection logic
+            if (!handled) {
+                if (member) |m| {
+                    if (mem.eql(u8, m, "Introspect") and (iface == null or mem.eql(u8, iface.?, "org.freedesktop.DBus.Introspectable"))) {
+                        // Check for children
+                        var children_xml: ArrayList(u8) = try .initCapacity(this.allocator, 256);
+                        defer children_xml.deinit(this.allocator);
+
+                        // We need a set to avoid duplicates
+                        var seen_children: StringHashMap(void) = .init(this.allocator);
+                        defer seen_children.deinit();
+
+                        for (this.registered_interfaces.items) |*w| {
+                            if (mem.startsWith(u8, w.path, p)) {
+                                if (w.path.len > p.len) {
+                                    var child_name: []const u8 = "";
+                                    if (mem.eql(u8, p, "/")) {
+                                        // Special case root
+                                        if (w.path.len > 1) {
+                                            const sub = w.path[1..];
+                                            if (mem.findScalar(u8, sub, '/')) |idx| {
+                                                child_name = sub[0..idx];
+                                            } else {
+                                                child_name = sub;
                                             }
                                         }
-
-                                        if (child_name.len > 0) {
-                                            if (seen_children.get(child_name) == null) {
-                                                try seen_children.put(child_name, {});
-                                                try children_xml.print(this.allocator, "  <node name=\"{s}\"/>\n", .{child_name});
+                                    } else {
+                                        // Check if w.path[p.len] == '/'
+                                        if (w.path[p.len] == '/') {
+                                            const sub = w.path[p.len + 1 ..];
+                                            if (mem.findScalar(u8, sub, '/')) |idx| {
+                                                child_name = sub[0..idx];
+                                            } else {
+                                                child_name = sub;
                                             }
+                                        }
+                                    }
+
+                                    if (child_name.len > 0) {
+                                        if (seen_children.get(child_name) == null) {
+                                            try seen_children.put(child_name, {});
+                                            try children_xml.print(this.allocator, "  <node name=\"{s}\"/>\n", .{child_name});
                                         }
                                     }
                                 }
                             }
-
-                            // Construct full XML
-                            var full_xml: ArrayList(u8) = try .initCapacity(this.allocator, 1024);
-                            defer full_xml.deinit(this.allocator);
-
-                            try full_xml.appendSlice(this.allocator, "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"");
-                            try full_xml.appendSlice(this.allocator, " \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n");
-                            try full_xml.appendSlice(this.allocator, "<node>\n");
-                            try full_xml.appendSlice(this.allocator, children_xml.items);
-                            try full_xml.appendSlice(this.allocator, "</node>\n");
-
-                            // Send Reply
-                            const xml_slice = try full_xml.toOwnedSliceSentinel(this.allocator, 0);
-                            defer this.allocator.free(xml_slice);
-
-                            var encoder: Encoder = try .encode(this.allocator, GStr.new(xml_slice));
-                            defer encoder.deinit();
-
-                            try this.sendReply(msg, encoder);
                         }
+
+                        // Construct full XML
+                        var full_xml: ArrayList(u8) = try .initCapacity(this.allocator, 1024);
+                        defer full_xml.deinit(this.allocator);
+
+                        try full_xml.appendSlice(this.allocator, "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"");
+                        try full_xml.appendSlice(this.allocator, " \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n");
+                        try full_xml.appendSlice(this.allocator, "<node>\n");
+                        try full_xml.appendSlice(this.allocator, children_xml.items);
+                        try full_xml.appendSlice(this.allocator, "</node>\n");
+
+                        // Send Reply
+                        const xml_slice = try full_xml.toOwnedSliceSentinel(this.allocator, 0);
+                        defer this.allocator.free(xml_slice);
+
+                        var encoder: Encoder = try .encode(this.allocator, Value.GStr.new(xml_slice));
+                        defer encoder.deinit();
+
+                        try this.sendReply(message, encoder);
                     }
                 }
             }
@@ -565,7 +807,7 @@ pub fn waitOnHandle(this: *Connection, handle: usize) !void {
 
 /// Registers interest in specific signals or messages using a D-Bus match rule.
 pub fn addMatch(this: *Connection, match: [:0]const u8) !void {
-    var encoder: Encoder = try .encode(this.allocator, GStr.new(match));
+    var encoder: Encoder = try .encode(this.allocator, Value.GStr.new(match));
     defer encoder.deinit();
     // We don't care about the return value usually for AddMatch
     var reply = try this.methodCall("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", encoder.signature(), encoder.body());
@@ -573,21 +815,18 @@ pub fn addMatch(this: *Connection, match: [:0]const u8) !void {
 }
 
 /// Performs a synchronous D-Bus method call.
-pub fn methodCall(self: *Connection, dest: [:0]const u8, path: [:0]const u8, iface: [:0]const u8, member: [:0]const u8, signature: ?[:0]const u8, body: []const u8) !Message {
-    const serial = self.serial_counter;
-    defer self.serial_counter += 1;
+pub fn methodCall(this: *Connection, dest: [:0]const u8, path: [:0]const u8, iface: [:0]const u8, member: [:0]const u8, signature: ?[:0]const u8, body: []const u8) !Message {
+    const serial = this.nextSerial();
 
-    var fields_list: ArrayList(MessageHeaderField) = try .initCapacity(self.allocator, 5);
-    defer fields_list.deinit(self.allocator);
+    var fields_list: ArrayList(MessageHeaderField) = try .initCapacity(this.allocator, 5);
+    defer fields_list.deinit(this.allocator);
 
-    try fields_list.append(self.allocator, .{ .code = .Destination, .value = .{ .Destination = dest } });
-    try fields_list.append(self.allocator, .{ .code = .Path, .value = .{ .Path = path } });
-    try fields_list.append(self.allocator, .{ .code = .Interface, .value = .{ .Interface = iface } });
-    try fields_list.append(self.allocator, .{ .code = .Member, .value = .{ .Member = member } });
+    try fields_list.append(this.allocator, .{ .code = .Destination, .value = .{ .Destination = dest } });
+    try fields_list.append(this.allocator, .{ .code = .Path, .value = .{ .Path = path } });
+    try fields_list.append(this.allocator, .{ .code = .Interface, .value = .{ .Interface = iface } });
+    try fields_list.append(this.allocator, .{ .code = .Member, .value = .{ .Member = member } });
 
-    if (signature) |sig| {
-        try fields_list.append(self.allocator, .{ .code = .Signature, .value = .{ .Signature = sig } });
-    }
+    if (signature) |sig| try fields_list.append(this.allocator, .{ .code = .Signature, .value = .{ .Signature = sig } });
 
     const header: MessageHeader = .{
         .message_type = .MethodCall,
@@ -600,21 +839,21 @@ pub fn methodCall(self: *Connection, dest: [:0]const u8, path: [:0]const u8, ifa
 
     const message: Message = .new(header, body);
 
-    var bytes = try message.pack(self.allocator);
-    defer bytes.deinit(self.allocator);
+    var bytes = try message.pack(this.allocator);
+    defer bytes.deinit(this.allocator);
 
-    return self.call(bytes.items, serial);
+    return this.call(bytes.items, serial);
 }
 
 /// Frees resources associated with a message.
 pub fn freeMessage(this: *Connection, message: *Message) void {
-    if (message.body.len > 0) {
-        this.allocator.free(message.body);
-    }
+    this.allocator.free(message.body);
 
     for (message.header.header_fields) |f| {
         switch (f.value) {
-            .Path, .Interface, .Member, .ErrorName, .Destination, .Sender, .Signature => |s| this.allocator.free(s),
+            .Path, .Interface, .Member, .ErrorName, .Destination, .Sender, .Signature => |s| {
+                this.allocator.free(s);
+            },
             else => {},
         }
     }
@@ -623,7 +862,10 @@ pub fn freeMessage(this: *Connection, message: *Message) void {
 }
 
 /// Registers a callback for a specific D-Bus signal.
-pub fn registerSignalHandler(this: *Connection, interface: []const u8, member: []const u8, callback: *const fn (ctx: ?*anyopaque, msg: Message) void, ctx: ?*anyopaque) !void {
+pub fn registerSignalHandler(this: *Connection, interface: []const u8, member: []const u8, callback: *const fn (ctx: ?*anyopaque, message: Message) void, ctx: ?*anyopaque) !void {
+    this.signal_handlers_mutex.lockUncancelable(this.io);
+    defer this.signal_handlers_mutex.unlock(this.io);
+
     try this.signal_handlers.append(this.allocator, .{
         .interface = interface,
         .member = member,
@@ -632,35 +874,49 @@ pub fn registerSignalHandler(this: *Connection, interface: []const u8, member: [
     });
 }
 
-/// Blocks until a message is received and returns it.
-/// Signals that match a registered handler will be dispatched automatically and NOT returned.
-pub fn waitMessage(this: *Connection) !Message {
-    while (true) {
-        const message = if (this.pending_messages.items.len > 0)
-            this.pending_messages.orderedRemove(0)
-        else
-            try this.readNextMessage();
+fn workerLoop(this: *Connection) void {
+    while (this.is_running.load(.acquire)) {
+        const msg = this.readNextMessage() catch |err| {
+            if (!this.is_running.load(.acquire)) break;
+            std.debug.print("workerLoop read error: {}\n", .{err});
+            break;
+        };
 
-        if (message.header.message_type == .Signal) {
-            var dispatched = false;
-            for (this.signal_handlers.items) |handler| {
-                if (message.isSignal(handler.interface, handler.member)) {
-                    handler.callback(handler.ctx, message);
-                    dispatched = true;
+        if (msg.header.message_type == .MethodReturn or msg.header.message_type == .Error) {
+            var reply_serial: ?u32 = null;
+            for (msg.header.header_fields) |f| {
+                if (f.code == .ReplySerial) {
+                    reply_serial = f.value.ReplySerial;
+                    break;
                 }
             }
 
-            if (dispatched) {
-                this.freeMessage(@constCast(&message));
-                continue;
+            if (reply_serial) |serial| {
+                if (this.pending_calls.get(serial)) |pending| {
+                    pending.reply = msg;
+                    pending.state.store(@backingInt(CallState.completed), .release);
+                    this.io.futexWake(u32, &pending.state.raw, 1);
+                } else {
+                    this.freeMessage(@constCast(&msg));
+                }
+            } else {
+                this.freeMessage(@constCast(&msg));
             }
+        } else {
+            this.dispatch_queue.push(msg) catch |push_err| {
+                std.debug.print("workerLoop push error: {}\n", .{push_err});
+                this.freeMessage(@constCast(&msg));
+            };
         }
-
-        return message;
     }
+
+    this.is_running.store(false, .release);
+    this.pending_calls.wakeAllWithError();
+    this.dispatch_queue.wakeAll();
+    this.serve_futex.store(1, .release);
+    this.io.futexWake(u32, &this.serve_futex.raw, math.maxInt(u32));
 }
 
-/// Reads and parses the next D-Bus message from the socket stream (internal).
 fn readNextMessage(this: *Connection) !Message {
     var header_buf: [16]u8 = undefined;
 
@@ -673,7 +929,7 @@ fn readNextMessage(this: *Connection) !Message {
         else => return error.BadEndianFlag,
     };
 
-    const mtype: MessageHeaderType = @enumFromInt(header_buf[1]);
+    const mtype: MessageType = @fromBackingInt(@intCast(header_buf[1]));
     const flags = header_buf[2];
     const version = header_buf[3];
     const body_len = mem.readInt(u32, header_buf[4..8], endian);
@@ -682,20 +938,16 @@ fn readNextMessage(this: *Connection) !Message {
 
     const fields_bytes = try this.allocator.alloc(u8, fields_len);
     defer this.allocator.free(fields_bytes);
-
     try io_reader.readSliceAll(fields_bytes);
 
     // Align stream to 8 bytes
     const current_pos = 16 + fields_len;
     const padding = (8 - (current_pos % 8)) % 8;
-    if (padding > 0) {
-        try io_reader.discardAll(padding);
-    }
+    if (padding > 0) try io_reader.discardAll(padding);
 
     // Read body
     const body = try this.allocator.alloc(u8, body_len);
     errdefer this.allocator.free(body);
-
     try io_reader.readSliceAll(body);
 
     // Parse fields
@@ -711,17 +963,15 @@ fn readNextMessage(this: *Connection) !Message {
         fields_list.deinit(this.allocator);
     }
 
-    var freader: Reader = .fixed(fields_bytes);
+    var freader: Io.Reader = .fixed(fields_bytes);
 
     while (freader.seek < fields_len) {
         const padding_f = (8 - (freader.seek % 8)) % 8;
-        if (padding_f > 0) {
-            try freader.discardAll(padding_f);
-        }
+        if (padding_f > 0) try freader.discardAll(padding_f);
         if (freader.seek >= fields_len) break;
 
         const code_u8 = try freader.takeByte();
-        const code: MessageHeaderFieldCode = if (code_u8 <= 9) @enumFromInt(code_u8) else .Invalid;
+        const code: MessageHeaderFieldCode = if (code_u8 <= 9) @fromBackingInt(@intCast(code_u8)) else .Invalid;
 
         // Variant signature (we assume standard fields have correct types)
         const sig_len = try freader.takeByte();
@@ -764,30 +1014,22 @@ fn readNextMessage(this: *Connection) !Message {
                     .Sender => .{ .Sender = s_owned },
                     else => unreachable,
                 };
+
                 try fields_list.append(this.allocator, .{ .code = c, .value = hfv });
             },
             else => {
                 // Unknown field, cannot safely skip without parsing signature.
                 // For now, assume it consumes nothing more or panic?
                 // We risk desync here.
-                debug.print("WARN: Unknown Header Field Code {d}\n", .{code_u8});
-                return error.UnknownMessageHeaderField;
+                std.debug.print("WARN: Unknown Header Field Code {d}\n", .{code_u8});
+                return error.UnknownHeaderField;
             },
         }
     }
 
-    const final_fields = try fields_list.toOwnedSlice(this.allocator);
-    errdefer {
-        for (final_fields) |f| {
-            switch (f.value) {
-                .Path, .Interface, .Member, .ErrorName, .Destination, .Sender, .Signature => |s| this.allocator.free(s),
-                else => {},
-            }
-        }
-        this.allocator.free(final_fields);
-    }
-
     return .{
+        .allocator = this.allocator,
+        .body = body,
         .header = .{
             .endianess = endian,
             .message_type = mtype,
@@ -795,80 +1037,71 @@ fn readNextMessage(this: *Connection) !Message {
             .proto_version = version,
             .body_length = body_len,
             .serial = msg_serial,
-            .header_fields = final_fields,
+            .header_fields = try fields_list.toOwnedSlice(this.allocator),
         },
-        .body = body,
-        .allocator = this.allocator,
     };
 }
 
-/// Prints raw data bytes for debugging purposes (internal).
 fn printData(data: []u8) void {
     for (data) |x| {
         if ((x >= 46 and x <= 57) or (x >= 65 and x <= 90) or (x >= 97 and x <= 122)) {
-            debug.print("{c}", .{x});
+            std.debug.print("{c}", .{x});
         } else {
-            debug.print("\\{o}", .{x});
+            std.debug.print("\\{o}", .{x});
         }
     }
-    debug.print("\n", .{});
+    std.debug.print("\n", .{});
 }
 
-/// Sends raw bytes over the socket and waits for a matching reply (internal).
 fn call(this: *Connection, data: []u8, serial: u32) !Message {
-    var writer_buffer: [2048]u8 = undefined;
-    var writer_stream = this.stream.writer(this.io, &writer_buffer);
-    var writer = &writer_stream.interface;
+    var pending = PendingCall{};
 
-    try writer.writeAll(data);
-    try writer.flush();
+    try this.pending_calls.put(serial, &pending);
+    defer _ = this.pending_calls.remove(serial);
 
-    while (true) {
-        // Check pending messages first
-        for (this.pending_messages.items, 0..) |*message, i| {
+    if (this.is_initialized) try this.ensureWorkersStarted();
+
+    try this.writeMessageBytes(data);
+
+    if (this.backend == .poll or this.worker_thread == null) {
+        while (true) {
+            if (pending.reply) |r| return r;
+
+            const message = try this.readNextMessage();
             if (message.header.message_type == .MethodReturn or message.header.message_type == .Error) {
+                var reply_serial: ?u32 = null;
                 for (message.header.header_fields) |f| {
-                    if (f.code == .ReplySerial and f.value.ReplySerial == serial) {
-                        const found = this.pending_messages.orderedRemove(i);
-                        return found;
-                    }
-                }
-            }
-        }
-
-        // Read new message
-        const message = try this.readNextMessage();
-
-        // Check if it is the reply
-        var is_reply = false;
-        if (message.header.message_type == .MethodReturn or message.header.message_type == .Error) {
-            for (message.header.header_fields) |f| {
-                if (f.code == .ReplySerial and f.value.ReplySerial == serial) {
-                    is_reply = true;
-                    break;
-                }
-            }
-        }
-
-        if (is_reply) {
-            return message;
-        } else {
-            if (message.header.message_type == .Signal) {
-                var dispatched = false;
-                for (this.signal_handlers.items) |handler| {
-                    if (message.isSignal(handler.interface, handler.member)) {
-                        handler.callback(handler.ctx, message);
-                        dispatched = true;
+                    if (f.code == .ReplySerial) {
+                        reply_serial = f.value.ReplySerial;
+                        break;
                     }
                 }
 
-                if (dispatched) {
-                    this.freeMessage(@constCast(&message));
-                    continue;
+                if (reply_serial != null and reply_serial.? == serial) return message;
+                if (reply_serial) |rserial| {
+                    if (this.pending_calls.get(rserial)) |p| {
+                        p.reply = message;
+                        p.state.store(@backingInt(CallState.completed), .release);
+                        continue;
+                    }
                 }
+
+                this.freeMessage(@constCast(&message));
+
+                continue;
             }
 
-            try this.pending_messages.append(this.allocator, message);
+            this.dispatchUnsolicited(message) catch {};
         }
+    }
+
+    while (pending.state.load(.acquire) == @backingInt(CallState.pending)) this.io.futexWaitUncancelable(u32, &pending.state.raw, @backingInt(CallState.pending));
+
+    if (pending.state.load(.acquire) == @backingInt(CallState.err)) return error.ConnectionClosed;
+
+    if (pending.reply) |r| {
+        return r;
+    } else {
+        return error.CallFailed;
     }
 }

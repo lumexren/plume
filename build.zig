@@ -37,6 +37,14 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
 
+    const lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "plume",
+        .root_module = mod,
+    });
+
+    b.installArtifact(lib);
+
     const exe = b.addExecutable(.{
         .name = "plume-test",
         .root_module = b.createModule(.{
@@ -56,6 +64,26 @@ pub fn build(b: *Build) void {
 
     const run_step = b.step("test-app", "Run the test app");
     run_step.dependOn(&run_cmd.step);
+
+    const playground_exe = b.addExecutable(.{
+        .name = "plume-playground",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/playground.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "plume", .module = mod },
+            },
+        }),
+    });
+
+    playground_exe.lto = lto;
+
+    const run_plgd_cmd = b.addRunArtifact(playground_exe);
+    run_plgd_cmd.step.dependOn(b.getInstallStep());
+
+    const run_plgd_step = b.step("playground", "Run the playground test file");
+    run_plgd_step.dependOn(&run_plgd_cmd.step);
 
     const server_exe = b.addExecutable(.{
         .name = "plume-server-test",
@@ -92,6 +120,24 @@ pub fn build(b: *Build) void {
     const run_client = b.addRunArtifact(client_exe);
     const client_step = b.step("test-client", "Run the client test app");
     client_step.dependOn(&run_client.step);
+
+    const concurrency_exe = b.addExecutable(.{
+        .name = "plume-concurrency-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/concurrency_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "plume", .module = mod },
+            },
+        }),
+    });
+
+    concurrency_exe.lto = lto;
+
+    const run_concurrency = b.addRunArtifact(concurrency_exe);
+    const concurrency_step = b.step("test-concurrency", "Run concurrency and lifecycle tests");
+    concurrency_step.dependOn(&run_concurrency.step);
 
     const intro_exe = b.addExecutable(.{
         .name = "plume-introspection",
@@ -135,10 +181,30 @@ pub fn build(b: *Build) void {
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        .name = "plume",
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    const check_step = b.step("check", "Check compilation of all artifacts");
+    check_step.dependOn(&exe.step);
+    check_step.dependOn(&playground_exe.step);
+    check_step.dependOn(&server_exe.step);
+    check_step.dependOn(&client_exe.step);
+    check_step.dependOn(&concurrency_exe.step);
+    check_step.dependOn(&intro_exe.step);
+    check_step.dependOn(&gen_exe.step);
+    check_step.dependOn(&lib.step);
+
+    const docs_step = b.step("docs", "Generate HTML documentation");
+    const docs_install = b.addInstallDirectory(.{
+        .source_dir = mod_tests.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    docs_step.dependOn(&docs_install.step);
 }

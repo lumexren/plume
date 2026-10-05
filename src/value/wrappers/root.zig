@@ -17,16 +17,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
-/// The type of a D-Bus message.
-pub const Type = enum(u8) {
-    /// This is an invalid type.
-    Invalid = 0,
-    /// Method call. This message type may prompt a reply.
-    MethodCall = 1,
-    /// Method reply with returned data.
-    MethodReturn = 2,
-    /// Error reply. If the first argument exists and is a string, it is an error message.
-    Error = 3,
-    /// Signal emission.
-    Signal = 4,
-};
+pub const GPath = @import("GPath.zig");
+pub const GSig = @import("GSig.zig");
+pub const GStr = @import("GStr.zig");
+pub const GUFd = @import("GUFd.zig");
+pub const GVariant = @import("GVariant.zig").GVariant;
+pub const GVariantTag = @import("GVariant.zig").GVariantTag;

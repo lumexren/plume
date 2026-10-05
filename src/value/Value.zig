@@ -20,30 +20,27 @@
 /// Represent a dbus value
 const Value = @This();
 
-const Serializer = @import("../Serializer.zig");
-const DBusWriter = @import("../DBusWriter.zig");
+pub const DBusWriter = @import("DBusWriter.zig");
+pub const Serializer = @import("Serializer.zig");
 
-pub const GUFd = @import("GUFd.zig");
-pub const GStr = @import("GStr.zig");
-pub const GPath = @import("GPath.zig");
-pub const GSig = @import("GSig.zig");
-const GVar = @import("GVariant.zig");
-pub const GVariant = GVar.GVariant;
-pub const GVariantTag = GVar.GVariantTag;
+pub const Wrappers = @import("wrappers/root.zig");
+pub const GPath = Wrappers.GPath;
+pub const GSig = Wrappers.GSig;
+pub const GStr = Wrappers.GStr;
+pub const GUFd = Wrappers.GUFd;
+pub const GVariant = Wrappers.GVariant;
+pub const GVariantTag = Wrappers.GVariantTag;
 
 const std = @import("std");
-const meta = std.meta;
 const mem = std.mem;
 const math = std.math;
-const Allocator = mem.Allocator;
 
-/// Returns the D-Bus alignment requirement for a type.
 pub fn dbusAlignOf(comptime T: type) usize {
     if (T == GStr or T == GPath) return 4; // 's','o'
     if (T == GSig) return 1; // 'g'
     if (T == GUFd) return 4; // 'h'
     if (T == GVariant) return 1; // 'v'
-    if (comptime isDict(T)) return 4; // 'a'
+    if (comptime Value.isDict(T)) return 4; // 'a'
 
     return switch (@typeInfo(T)) {
         .int => |info| switch (info.bits) {
@@ -82,8 +79,10 @@ pub fn isDict(comptime T: type) bool {
     if (info == .@"struct") {
         if (@hasDecl(T, "KV") and @hasDecl(T, "iterator")) {
             const kv_info = @typeInfo(T.KV);
-            if (kv_info == .@"struct" and (kv_info.@"struct".field_names.len == 2)) {
-                return mem.eql(u8, kv_info.@"struct".field_names[0], "key") and mem.eql(u8, kv_info.@"struct".field_names[1], "value");
+            if (kv_info == .@"struct" and kv_info.@"struct".field_names.len == 2) {
+                const f0 = kv_info.@"struct".field_names[0];
+                const f1 = kv_info.@"struct".field_names[1];
+                return mem.eql(u8, f0, "key") and mem.eql(u8, f1, "value");
             }
         }
     }
@@ -91,8 +90,8 @@ pub fn isDict(comptime T: type) bool {
 }
 
 pub fn dictKV(comptime T: type) struct { key: type, val: type } {
-    const sinfo = @typeInfo(T.KV).@"struct";
-    return .{ .key = sinfo.field_types[0], .val = sinfo.field_types[1] };
+    const fields = @typeInfo(T.KV).@"struct";
+    return .{ .key = fields.field_types[0], .val = fields.field_types[1] };
 }
 
 fn dictKeyReprLen(comptime K: type) comptime_int {
@@ -100,36 +99,30 @@ fn dictKeyReprLen(comptime K: type) comptime_int {
     return reprLength(K);
 }
 
-/// Checks whether a type implements the D-Bus serialization interface (.ser method).
 pub fn doesImplementSer(comptime T: type) bool {
-    if (meta.hasMethod(T, "ser")) {
-        const Args = meta.ArgsTuple(@TypeOf(T.ser));
-        const fx = meta.fieldTypes(Args);
-        return (fx.len == 2 and fx[0] == T and fx[1] == *DBusWriter);
+    if (std.meta.hasMethod(T, "ser")) {
+        const Args = std.meta.ArgsTuple(@TypeOf(T.ser));
+        const typeInfo = @typeInfo(Args).@"struct";
+        return (typeInfo.field_names.len == 2 and typeInfo.field_types[0] == T and typeInfo.field_types[1] == *DBusWriter);
     }
 
     return false;
 }
 
-/// Returns the length of the D-Bus type signature for a given type.
 pub fn reprLength(comptime T: type) comptime_int {
     if (T == void) return 0;
     const info = @typeInfo(T);
     switch (info) {
         .@"struct", .@"union", .@"enum", .@"opaque" => {
-            if (@hasDecl(T, "SIGNATURE")) {
-                return @field(T, "SIGNATURE").len;
-            }
+            if (@hasDecl(T, "SIGNATURE")) return @field(T, "SIGNATURE").len;
         },
         else => {},
     }
-
     if (T == GStr or T == GPath or T == GSig or T == GUFd or T == GVariant) return 1;
     if (comptime isDict(T)) {
         const kv = dictKV(T);
         return 3 + dictKeyReprLen(kv.key) + reprLength(kv.val);
     }
-
     switch (info) {
         .int => return 1,
         .bool => return 1,
@@ -138,13 +131,13 @@ pub fn reprLength(comptime T: type) comptime_int {
             return 1;
         },
         .@"struct" => |s_info| {
-            const is_dict_entry = s_info.field_types.len == 2 and (mem.eql(u8, s_info.field_names[0], "key") and mem.eql(u8, s_info.field_names[1], "value"));
+            const is_dict_entry = s_info.field_names.len == 2 and (mem.eql(u8, s_info.field_names[0], "key") and mem.eql(u8, s_info.field_names[1], "value"));
             var len: usize = if (is_dict_entry or !s_info.is_tuple) 2 else 0;
-            inline for (s_info.field_types, s_info.field_names) |field, name| {
-                if (is_dict_entry and (field == []const u8 or field == [:0]const u8 or field == []u8 or field == [:0]u8) and mem.eql(u8, name, "key")) {
+            inline for (s_info.field_names, s_info.field_types) |FieldName, FieldType| {
+                if (is_dict_entry and (FieldType == []const u8 or FieldType == [:0]const u8 or FieldType == []u8 or FieldType == [:0]u8) and mem.eql(u8, FieldName, "key")) {
                     len += 1;
                 } else {
-                    len += reprLength(field);
+                    len += reprLength(FieldType);
                 }
             }
             return len;
@@ -156,11 +149,10 @@ pub fn reprLength(comptime T: type) comptime_int {
             if (p_info.size == .one) return reprLength(p_info.child);
             @compileError("Unsupported pointer type");
         },
-        else => @compileError("Unsupported type for signature"),
+        else => @compileError("Unsupported type for signature " ++ @typeName(T)),
     }
 }
 
-/// Writes the D-Bus type signature representation into the provided buffer.
 pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[len]u8) void {
     const info = @typeInfo(T);
     switch (info) {
@@ -173,7 +165,6 @@ pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[l
         },
         else => {},
     }
-
     var real_start: usize = start;
 
     if (T == GStr) {
@@ -220,7 +211,7 @@ pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[l
         .float => xs[real_start] = 'd',
         .bool => xs[real_start] = 'b',
         .@"struct" => |s_info| {
-            const is_dict_entry = s_info.field_types.len == 2 and (mem.eql(u8, s_info.field_names[0], "key") and mem.eql(u8, s_info.field_names[1], "value"));
+            const is_dict_entry = s_info.field_names.len == 2 and (mem.eql(u8, s_info.field_names[0], "key") and mem.eql(u8, s_info.field_names[1], "value"));
             if (is_dict_entry) {
                 xs[real_start] = '{';
                 real_start += 1;
@@ -230,13 +221,13 @@ pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[l
                 real_start += 1;
                 xs[len - 1] = ')';
             }
-            inline for (s_info.field_types, s_info.field_names) |field, name| {
-                if (is_dict_entry and (field == []const u8 or field == [:0]const u8 or field == []u8 or field == [:0]u8) and mem.eql(u8, name, "key")) {
+            inline for (s_info.field_names, s_info.field_types) |FieldName, FieldType| {
+                if (is_dict_entry and (FieldType == []const u8 or FieldType == [:0]const u8 or FieldType == []u8 or FieldType == [:0]u8) and mem.eql(u8, FieldName, "key")) {
                     xs[real_start] = 's';
                     real_start += 1;
                 } else {
-                    const ll = reprLength(field);
-                    getRepr(field, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start..][0..ll])));
+                    const ll = reprLength(FieldType);
+                    getRepr(FieldType, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start..][0..ll])));
                     real_start += ll;
                 }
             }
@@ -252,9 +243,8 @@ pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[l
                 const ll = reprLength(p_info.child);
                 getRepr(p_info.child, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start + 1 ..][0..ll])));
             } else if (p_info.size == .one) {
-                const ll = reprLength(p_info.child);
-                getRepr(p_info.child, ll, 0, @as(*[ll]u8, @ptrCast(xs[real_start..][0..ll])));
-            }
+                getRepr(p_info.child, len, start, xs);
+            } else unreachable;
         },
         .@"union" => xs[real_start] = 'v',
         else => unreachable,
@@ -269,7 +259,7 @@ pub fn Array(comptime T: type) type {
     const rr = blk: {
         var res: [repr_len + 1]u8 = @splat(0);
         res[0] = 'a';
-        getRepr(T, inner_len, 0, @as(*[inner_len]u8, @ptrCast(res[1..repr_len].ptr)));
+        getRepr(T, inner_len, 0, res[1..repr_len]);
         res[repr_len] = 0;
         break :blk res;
     };
@@ -279,14 +269,13 @@ pub fn Array(comptime T: type) type {
         inner: []const T,
         repr: []const u8,
 
-        pub fn new(xs: []const T) @This() {
-            return .{
-                .inner = xs,
-                .repr = &rr,
-            };
+        const Self = @This();
+
+        pub fn new(xs: []const T) Self {
+            return .{ .inner = xs, .repr = SIGNATURE };
         }
 
-        pub fn ser(this: @This(), w: *DBusWriter) !void {
+        pub fn ser(self: Self, w: *DBusWriter) !void {
             // 4-align for array container
             try w.padTo(4);
 
@@ -300,10 +289,10 @@ pub fn Array(comptime T: type) type {
             const start_elems = w.buffer.items.len;
 
             var i: usize = 0;
-            while (i < this.inner.len) : (i += 1) {
+            while (i < self.inner.len) : (i += 1) {
                 // align per element for safety (especially composites)
                 try w.padTo(A);
-                try Serializer.trySerialize(T, this.inner[i], w);
+                try Serializer.trySerialize(T, self.inner[i], w);
             }
 
             // Patch array byte length
@@ -334,113 +323,17 @@ pub fn Tuple(comptime T: type) type {
         inner: T,
         repr: []const u8,
 
-        pub fn new(structure: T) @This() {
+        const Self = @This();
+
+        pub fn new(structure: T) Self {
             return .{ .inner = structure, .repr = &rr };
         }
 
-        pub fn ser(this: @This(), w: *DBusWriter) !void {
-            inline for (info.@"struct".fields) |fld| {
-                try w.padTo(dbusAlignOf(fld.type));
-                try Serializer.trySerialize(fld.type, @field(this.inner, fld.name), w);
+        pub fn ser(self: Self, w: *DBusWriter) !void {
+            inline for (info.@"struct".field_names, info.@"struct".field_types) |FieldName, FieldType| {
+                try w.padTo(dbusAlignOf(FieldType));
+                try Serializer.trySerialize(FieldType, @field(self.inner, FieldName), w);
             }
-        }
-    };
-}
-
-/// **CONTAINER**
-/// Entry in a dict or map (array of key-value pairs). Type code 101 'e' is
-/// reserved for use in bindings and implementations to represent the general
-/// concept of a dict or dict-entry, and must not appear in signatures used on D-Bus.
-pub fn Dict(comptime K: type, comptime V: type, comptime M: type) type {
-    const key_repr_len = reprLength(K);
-    const value_repr_len = reprLength(V);
-
-    const total_len = value_repr_len + key_repr_len + 3;
-    const repr_arr = blk: {
-        var rr: [total_len + 1]u8 = @splat(0);
-        rr[0] = 'a';
-        rr[1] = '{';
-        rr[total_len - 1] = '}';
-        rr[total_len] = 0;
-        getRepr(K, key_repr_len, 0, @as(*[key_repr_len]u8, @ptrCast(rr[2 .. key_repr_len + 2].ptr)));
-        getRepr(V, value_repr_len, 0, @as(*[value_repr_len]u8, @ptrCast(rr[key_repr_len + 2 .. (total_len - 1)].ptr)));
-        break :blk rr;
-    };
-
-    return struct {
-        pub const SIGNATURE: [:0]const u8 = repr_arr[0..total_len :0];
-        inner: M,
-        repr: []const u8,
-
-        pub fn init(allocator: Allocator) @This() {
-            return .{ .repr = &repr_arr, .inner = M.init(allocator) };
-        }
-
-        pub fn new(inner: M) @This() {
-            return .{ .repr = &repr_arr, .inner = inner };
-        }
-
-        pub fn ser(this: @This(), w: *DBusWriter) !void {
-            // This is precisely: Array of dict-entry
-            // Array header (4-align)
-            try w.padTo(4);
-            const len_pos = w.buffer.items.len;
-            try w.buffer.appendNTimes(w.allocator, 0, 4);
-
-            // Elements block must start at 8 (dict-entry alignment)
-            try w.padTo(8);
-            const start_elems = w.buffer.items.len;
-
-            // Iterate entries (supports std.StringHashMap and slices of {key,value})
-            if (meta.hasMethod(@TypeOf(this.inner), "iterator")) {
-                var it = this.inner.iterator();
-                while (it.next()) |e| {
-                    try w.padTo(8); // each dict-entry
-                    try w.padTo(dbusAlignOf(K));
-                    const key = e.key_ptr.*;
-                    if (comptime K == GStr) {
-                        try w.padTo(4);
-                        try w.writeInt(u32, @intCast(key.len));
-                        try w.buffer.appendSlice(w.allocator, key);
-                        try w.buffer.append(w.allocator, 0);
-                    } else {
-                        try Serializer.trySerialize(K, key, w);
-                    }
-
-                    try w.padTo(dbusAlignOf(V));
-                    try Serializer.trySerialize(V, e.value_ptr.*, w);
-                }
-            } else switch (@typeInfo(@TypeOf(this.inner))) {
-                .pointer => |pi| {
-                    if (pi.size != .slice) return error.UnsupportedDictBacking;
-                    const Elem = pi.child;
-                    const einfo = @typeInfo(Elem);
-                    if (einfo != .@"struct") return error.UnsupportedDictBacking;
-                    inline for (einfo.@"struct".fields) |_| {} // keep einfo constexpr
-                    for (this.inner) |ev| {
-                        try w.padTo(8);
-                        const k = @field(ev, "key");
-                        const v = @field(ev, "value");
-                        try w.padTo(dbusAlignOf(K));
-                        if (comptime K == GStr) {
-                            try w.padTo(4);
-                            try w.writeInt(u32, @intCast(k.s.len));
-                            try w.buffer.appendSlice(w.allocator, k.s);
-                            try w.buffer.append(w.allocator, 0);
-                        } else {
-                            try Serializer.trySerialize(K, k, w);
-                        }
-                        try w.padTo(dbusAlignOf(V));
-                        try Serializer.trySerialize(V, v, w);
-                    }
-                },
-                else => return error.UnsupportedDictBacking,
-            }
-
-            // Patch array byte length
-            const arr_bytes: usize = w.buffer.items.len - start_elems;
-            if (arr_bytes > math.maxInt(u32)) return error.ArrayTooLarge;
-            w.writeU32At(len_pos, @intCast(arr_bytes));
         }
     };
 }
@@ -453,16 +346,19 @@ pub fn Variant(comptime T: type) type {
         .@"union" => {
             return struct {
                 pub const SIGNATURE = "v";
+
                 inner: T,
                 repr: [:0]const u8,
 
-                pub fn new(any: T) @This() {
+                const Self = @This();
+
+                pub fn new(any: T) Self {
                     return .{ .inner = any, .repr = "v" };
                 }
 
-                pub fn ser(this: @This(), w: *DBusWriter) anyerror!void {
+                pub fn ser(self: Self, w: *DBusWriter) anyerror!void {
                     // 1) write signature ('g'), 2) align to inner alignment, 3) write payload
-                    switch (this.inner) {
+                    switch (self.inner) {
                         inline else => |payload| {
                             const PT = @TypeOf(payload);
                             // signature (1-aligned)
@@ -486,50 +382,65 @@ pub fn Struct(comptime S: type) type {
     if (@typeInfo(S) != .@"struct") {
         @compileError("unexpected input type");
     }
-
     const repr_len = reprLength(S);
     var repr_arr: [repr_len]u8 = @splat(0);
     getRepr(S, repr_len, 0, &repr_arr);
     const rr = repr_arr;
+
     return struct {
         pub const SIGNATURE = &rr;
+
         inner: S,
         repr: []const u8,
 
-        pub fn new(structure: S) @This() {
+        const Self = @This();
+
+        pub fn new(structure: S) Self {
             return .{ .inner = structure, .repr = &rr };
         }
 
-        pub fn ser(this: @This(), w: *DBusWriter) !void {
+        pub fn ser(self: Self, w: *DBusWriter) !void {
             try w.padTo(8);
-            inline for (@typeInfo(S).@"struct".field_types, @typeInfo(S).@"struct".field_names) |field, name| {
-                try w.padTo(dbusAlignOf(field));
-                try Serializer.trySerialize(field, @field(this.inner, name), w);
+            const sinfo = @typeInfo(S).@"struct";
+            const is_dict_entry = sinfo.field_names.len == 2 and (mem.eql(u8, sinfo.field_names[0], "key") and mem.eql(u8, sinfo.field_names[1], "value"));
+            inline for (sinfo.field_names, sinfo.field_types) |FieldName, FieldType| {
+                try w.padTo(dbusAlignOf(FieldType));
+                if (is_dict_entry and (FieldType == []const u8 or FieldType == [:0]const u8 or FieldType == []u8 or FieldType == [:0]u8) and mem.eql(u8, FieldName, "key")) {
+                    try w.padTo(4);
+                    const slice = @field(self.inner, FieldName);
+                    try w.writeInt(u32, @intCast(slice.len));
+                    try w.buffer.appendSlice(w.allocator, slice);
+                    try w.buffer.append(w.allocator, 0);
+                } else {
+                    try Serializer.trySerialize(FieldType, @field(self.inner, FieldName), w);
+                }
             }
         }
     };
 }
 
-/// Creates a basic numeric or boolean D-Bus value wrapper (internal helper).
 fn BasicType(comptime T: type) type {
     const repr_len = reprLength(T);
     var repr_arr: [repr_len]u8 = @splat(0);
     getRepr(T, repr_len, 0, &repr_arr);
     const rr = repr_arr;
+
     return struct {
         value: T,
         repr: []const u8,
 
-        pub fn new(value: T) @This() {
+        const Self = @This();
+
+        pub fn new(value: T) Self {
             return .{ .value = value, .repr = &rr };
         }
 
-        pub fn ser(this: @This(), w: *DBusWriter) !void {
+        pub fn ser(self: Self, w: *DBusWriter) !void {
             try w.padTo(dbusAlignOf(T));
             switch (@typeInfo(T)) {
-                .int => try w.writeInt(T, this.value),
+                .int => try w.writeInt(T, self.value),
                 .float => {
-                    const bits: u64 = @bitCast(this.value); // f64
+                    const bits: u64 = @bitCast(self.value); // f64
                     try w.writeInt(u64, bits);
                 },
                 else => unreachable,
@@ -538,34 +449,33 @@ fn BasicType(comptime T: type) type {
     };
 }
 
-/// Creates a string-like D-Bus value wrapper for a given type code (internal helper).
 fn StringLike(r: u8) type {
-    const repr_len = 1;
+    const rr = [1]u8{r};
     return struct {
         value: [:0]const u8,
         repr: []const u8,
 
-        pub fn new(value: [:0]const u8) @This() {
-            var repr_arr: [repr_len]u8 = @splat(0);
-            repr_arr[0] = r;
-            return .{ .value = value, .repr = &repr_arr };
+        const Self = @This();
+
+        pub fn new(value: [:0]const u8) Self {
+            return .{ .value = value, .repr = &rr };
         }
 
-        pub fn ser(this: @This(), w: *DBusWriter) !void {
+        pub fn ser(self: Self, w: *DBusWriter) !void {
             switch (r) {
                 's', 'o' => {
                     try w.padTo(4);
-                    const len_u32: u32 = @intCast(this.value.len); // not including NUL
+                    const len_u32: u32 = @intCast(self.value.len); // not including NUL
                     try w.writeInt(u32, len_u32);
-                    try w.buffer.appendSlice(w.allocator, this.value);
+                    try w.buffer.appendSlice(w.allocator, self.value);
                     try w.buffer.append(w.allocator, 0);
                 },
                 'g' => {
                     try w.padTo(1);
-                    const n = this.value.len;
+                    const n = self.value.len;
                     if (n > 255) return error.SignatureTooLong;
                     try w.buffer.append(w.allocator, @as(u8, @intCast(n)));
-                    try w.buffer.appendSlice(w.allocator, this.value);
+                    try w.buffer.appendSlice(w.allocator, self.value);
                     try w.buffer.append(w.allocator, 0);
                 },
                 else => unreachable,
@@ -622,17 +532,22 @@ pub fn Bool() type {
     var repr_arr: [repr_len]u8 = @splat(0);
     getRepr(bool, repr_len, 0, &repr_arr);
     const rr = repr_arr;
+
     return struct {
         value: bool,
         repr: []const u8,
+        const Self = @This();
 
-        pub fn new(value: bool) @This() {
-            return .{ .value = value, .repr = &rr };
+        pub fn new(value: bool) Self {
+            return Self{
+                .value = value,
+                .repr = &rr,
+            };
         }
 
-        pub fn ser(this: @This(), w: *DBusWriter) !void {
+        pub fn ser(self: Self, w: *DBusWriter) !void {
             try w.padTo(dbusAlignOf(bool)); // 4
-            try w.writeInt(u32, @intFromBool(this.value));
+            try w.writeInt(u32, @intFromBool(self.value));
         }
     };
 }
@@ -640,20 +555,21 @@ pub fn Bool() type {
 /// Unsigned 32-bit integer representing an index into an out-of-band array of
 /// file descriptors, transferred via some platform-specific mechanism (mnemonic: h for handle)
 pub fn UnixFd() type {
-    const repr_len = reprLength(u32);
+    const rr = [1]u8{'h'};
+
     return struct {
         handle: u32,
         repr: []const u8,
 
-        pub fn new(handle: u32) @This() {
-            var repr_arr: [repr_len]u8 = @splat(0);
-            repr_arr[0] = 'h';
-            return .{ .handle = handle, .repr = &repr_arr };
+        const Self = @This();
+
+        pub fn new(handle: u32) Self {
+            return .{ .handle = handle, .repr = &rr };
         }
 
-        pub fn ser(this: @This(), w: *DBusWriter) !void {
+        pub fn ser(self: Self, w: *DBusWriter) !void {
             try w.padTo(4);
-            try w.writeInt(u32, this.handle);
+            try w.writeInt(u32, self.handle);
         }
     };
 }
@@ -677,4 +593,73 @@ pub fn ObjectPath() type {
 /// _Validity constraints_: Zero or more [single complete types](https://dbus.freedesktop.org/doc/dbus-specification.html#term-single-complete-type)
 pub fn Signature() type {
     return StringLike('g');
+}
+
+test "Signature Generation test" {
+    const testing = std.testing;
+    const allocator = std.testing.allocator;
+    _ = allocator;
+    const eql = std.mem.eql;
+
+    const Speed = struct {
+        vel: f64,
+        acc: u64,
+        stopped: bool,
+    };
+
+    const Coord = struct {
+        x: f64,
+        y: f64,
+        speed: Speed,
+    };
+
+    const TTag = enum { oneValue, twoValue, threeValue };
+    const MulTup = union(TTag) {
+        oneValue: @Tuple(&[_]type{i32}),
+        twoValue: @Tuple(&[_]type{ i32, i32 }),
+        threeValue: @Tuple(&[_]type{ i32, i32, i32 }),
+    };
+
+    const a = Value.Bool().new(false);
+    try testing.expect(eql(u8, a.repr, "b"));
+
+    const xs = Value.Array(i64).new(&[_]i64{ 1, 2, 3 });
+    try testing.expect(eql(u8, xs.repr, "ax"));
+
+    const c = Value.Double().new(3.0);
+    try testing.expect(eql(u8, c.repr, "d"));
+
+    const coord = Coord{
+        .x = 98,
+        .y = 199,
+        .speed = .{
+            .acc = 23,
+            .stopped = false,
+            .vel = 455,
+        },
+    };
+
+    const t = Value.Struct(Coord).new(coord);
+    try testing.expect(eql(u8, t.repr, "(dd(dtb))"));
+
+    const cx = Value.Array(Coord).new(&[_]Coord{coord});
+    try testing.expect(eql(u8, cx.repr, "a(dd(dtb))"));
+
+    const tup = Value.Tuple(@Tuple(&[_]type{ f64, f64, f64 })).new(.{ 4, 4, 4 });
+    try testing.expect(eql(u8, tup.repr, "ddd"));
+
+    const va = Value.Variant(MulTup).new(.{ .threeValue = .{ 4, 4, 4 } });
+    try testing.expect(eql(u8, va.repr, "v"));
+
+    const MapT = std.StringHashMap(f64);
+    const repr_len = Value.reprLength(MapT);
+    var repr_buf: [10]u8 = undefined;
+    Value.getRepr(MapT, repr_len, 0, repr_buf[0..repr_len]);
+    try testing.expect(eql(u8, repr_buf[0..repr_len], "a{sd}"));
+
+    const IntMapT = std.AutoHashMap(u32, Value.GStr);
+    const int_repr_len = Value.reprLength(IntMapT);
+    var int_repr_buf: [10]u8 = undefined;
+    Value.getRepr(IntMapT, int_repr_len, 0, int_repr_buf[0..int_repr_len]);
+    try testing.expect(eql(u8, int_repr_buf[0..int_repr_len], "a{us}"));
 }

@@ -1,37 +1,17 @@
-// SPDX-License-Identifier: GPL-3.0-only
-//
-// This file is part of plume.
-//
-// Copyright (c) 2026 erenvly
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://gnu.org/licenses>.
-
 const std = @import("std");
 const plume = @import("plume");
 const Proxy = plume.Proxy;
-const Value = plume.Value;
-const GStr = Value.GStr;
-const GPath = Value.GPath;
-const GSig = Value.GSig;
-const GUFd = Value.GUFd;
-const GVariant = Value.GVariant;
+const GStr = plume.Value.GStr;
+const GPath = plume.Value.GPath;
+const GSig = plume.Value.GSig;
+const GUFd = plume.Value.GUFd;
+const GVariant = plume.Value.GVariant;
 
 pub const PropertiesProxy = struct {
     inner: Proxy,
 
     pub fn init(conn: *plume.Connection) PropertiesProxy {
-        return .{ .inner = Proxy.init(conn, "org.freedesktop.UPower", "/org/freedesktop/UPower", "org.freedesktop.DBus.Properties") };
+        return .{ .inner = .init(conn, "org.freedesktop.UPower", "/org/freedesktop/UPower", "org.freedesktop.DBus.Properties") };
     }
 
     pub fn Get(self: PropertiesProxy, interface_name: GStr, property_name: GStr) !GVariant {
@@ -51,9 +31,9 @@ pub const PropertiesProxy = struct {
     pub fn connectPropertiesChanged(
         self: PropertiesProxy,
         ctx: anytype,
-        comptime callback: fn (@TypeOf(ctx), struct { GStr, std.StringHashMap(GVariant), []const GStr }) void,
+        comptime callback: fn (@TypeOf(ctx), @Tuple(&[_]type{ GStr, std.StringHashMap(GVariant), []const GStr })) void,
     ) !void {
-        try self.inner.connectSignal(struct { GStr, std.StringHashMap(GVariant), []const GStr }, "PropertiesChanged", ctx, callback);
+        try self.inner.connectSignal(@Tuple(&[_]type{ GStr, std.StringHashMap(GVariant), []const GStr }), "PropertiesChanged", ctx, callback);
     }
 };
 
@@ -61,7 +41,7 @@ pub const IntrospectableProxy = struct {
     inner: Proxy,
 
     pub fn init(conn: *plume.Connection) IntrospectableProxy {
-        return .{ .inner = Proxy.init(conn, "org.freedesktop.UPower", "/org/freedesktop/UPower", "org.freedesktop.DBus.Introspectable") };
+        return .{ .inner = .init(conn, "org.freedesktop.UPower", "/org/freedesktop/UPower", "org.freedesktop.DBus.Introspectable") };
     }
 
     pub fn Introspect(self: IntrospectableProxy) !GStr {
@@ -75,7 +55,7 @@ pub const PeerProxy = struct {
     inner: Proxy,
 
     pub fn init(conn: *plume.Connection) PeerProxy {
-        return .{ .inner = Proxy.init(conn, "org.freedesktop.UPower", "/org/freedesktop/UPower", "org.freedesktop.DBus.Peer") };
+        return .{ .inner = .init(conn, "org.freedesktop.UPower", "/org/freedesktop/UPower", "org.freedesktop.DBus.Peer") };
     }
 
     pub fn Ping(self: PeerProxy) !void {
@@ -93,7 +73,7 @@ pub const UPowerProxy = struct {
     inner: Proxy,
 
     pub fn init(conn: *plume.Connection) UPowerProxy {
-        return .{ .inner = Proxy.init(conn, "org.freedesktop.UPower", "/org/freedesktop/UPower", "org.freedesktop.UPower") };
+        return .{ .inner = .init(conn, "org.freedesktop.UPower", "/org/freedesktop/UPower", "org.freedesktop.UPower") };
     }
 
     pub fn EnumerateDevices(self: UPowerProxy) ![]const GPath {
@@ -119,15 +99,15 @@ pub const UPowerProxy = struct {
     pub fn connectDeviceAdded(
         self: UPowerProxy,
         ctx: anytype,
-        comptime callback: fn (@TypeOf(ctx), struct { GPath }) void,
+        comptime callback: fn (@TypeOf(ctx), @Tuple(&[_]type{GPath})) void,
     ) !void {
-        try self.inner.connectSignal(struct { GPath }, "DeviceAdded", ctx, callback);
+        try self.inner.connectSignal(@Tuple(&[_]type{GPath}), "DeviceAdded", ctx, callback);
     }
     pub fn connectDeviceRemoved(
         self: UPowerProxy,
         ctx: anytype,
-        comptime callback: fn (@TypeOf(ctx), struct { GPath }) void,
+        comptime callback: fn (@TypeOf(ctx), @Tuple(&[_]type{GPath})) void,
     ) !void {
-        try self.inner.connectSignal(struct { GPath }, "DeviceRemoved", ctx, callback);
+        try self.inner.connectSignal(@Tuple(&[_]type{GPath}), "DeviceRemoved", ctx, callback);
     }
 };

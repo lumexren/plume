@@ -17,11 +17,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
-const Encoder = @import("Encoder.zig");
-const Message = @import("message/root.zig");
-const MessageHeader = Message.Header;
-const MessageHeaderField = MessageHeader.Field;
 const Connection = @import("Connection.zig");
+const Encoder = @import("Encoder.zig");
+const Message = @import("Message.zig");
+const MessageHeader = Message.MessageHeader;
+const MessageHeaderField = MessageHeader.HeaderField;
 
 const std = @import("std");
 
@@ -37,7 +37,7 @@ pub fn Signal(comptime T: type) type {
         pub const PayloadType = T;
 
         /// Triggers a signal.
-        /// `connection`: The connection to send the signal on.
+        /// `conn`: The connection to send the signal on.
         /// `payload`: The payload matching the signal's type.
         pub fn trigger(this: *@This(), connection: *Connection, payload: T) !void {
             const interface = this.interface orelse return error.SignalNotBound;
@@ -46,8 +46,7 @@ pub fn Signal(comptime T: type) type {
             var encoder: Encoder = try .encode(connection.allocator, payload);
             defer encoder.deinit();
 
-            const serial = connection.serial_counter;
-            connection.serial_counter += 1;
+            const serial = connection.nextSerial();
 
             const header: MessageHeader = .{
                 .message_type = .Signal,

@@ -18,26 +18,21 @@
 // along with this program. If not, see <https://gnu.org/licenses>.
 
 const std = @import("std");
-const lang = std.lang;
-const Endian = lang.Endian;
+const Endian = std.lang.Endian;
 const mem = std.mem;
 
-/// Converts an integer value to a byte array in the specified endianness.
 pub inline fn convertInteger(comptime T: type, x: T, endianess: Endian) [@sizeOf(@TypeOf(x))]u8 {
     comptime switch (@typeInfo(T)) {
         .int => {},
         else => @compileError("convertInteger expects an integer type"),
     };
-
     return mem.toBytes(mem.nativeTo(T, x, endianess));
 }
 
-/// Reads an integer value from a 4-byte buffer in the specified endianness.
-pub inline fn readInteger(comptime T: type, data: *const [4]u8, endianess: Endian) T {
-    std.debug.print("data = {any}\n", .{data});
-
-    return switch (endianess) {
-        .little => mem.littleToNative(T, mem.bytesToValue(T, data)),
-        .big => mem.bigToNative(T, mem.bytesToValue(T, data)),
+pub inline fn readInteger(comptime T: type, data: *const [@sizeOf(T)]u8, endianess: Endian) T {
+    comptime switch (@typeInfo(T)) {
+        .int => {},
+        else => @compileError("readInteger expects an integer type"),
     };
+    return mem.toNative(T, mem.bytesToValue(T, data), endianess);
 }

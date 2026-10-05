@@ -17,32 +17,52 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
-//! Plume is a modern, fast, and easy-to-use D-Bus library for Zig.
-//! It provides a type-safe, minimal-allocation API for D-Bus communication.
-//! It is designed to be used in both userspace applications and
-//! as a foundation for more complex D-Bus implementations.
+const std = @import("std");
+const testing = std.testing;
 
-pub const Decoder = @import("Decoder.zig");
-pub const Encoder = @import("Encoder.zig");
-pub const Connection = @import("Connection.zig");
-pub const DBusWriter = @import("DBusWriter.zig");
-pub const Message = @import("message/root.zig");
-pub const MethodResult = @import("MethodResult.zig");
+pub const Value = @import("value/Value.zig");
+pub const Message = @import("Message.zig");
+pub const MessageQueue = @import("MessageQueue.zig");
+
 pub const Proxy = @import("Proxy.zig");
-pub const Serializer = @import("Serializer.zig");
-pub const SocketIterator = @import("SocketIterator.zig");
-pub const Value = @import("value/root.zig");
-pub const InterfaceWrapper = @import("InterfaceWrapper.zig");
 pub const SignalHandler = @import("SignalHandler.zig");
+pub const Connection = @import("Connection.zig");
+pub const Backend = Connection.Backend;
+pub const BusType = Connection.BusType;
 
 pub const introspection = @import("introspection.zig");
 pub const generator = @import("generator.zig");
 pub const xml_generator = @import("xml_generator.zig");
 
-pub const dbus_types = @import("dbus_types.zig");
+pub const Encoder = @import("Encoder.zig");
+pub const Decoder = @import("Decoder.zig");
+pub const MethodResult = @import("MethodResult.zig");
+pub const dispatcher = @import("dispatcher.zig");
 
-const std = @import("std");
+// Re-export types
+const dbus_types = @import("dbus_types.zig");
+pub const Signal = dbus_types.Signal;
+pub const signal = dbus_types.signal;
+pub const Property = dbus_types.Property;
+pub const property = dbus_types.property;
+pub const Access = dbus_types.Access;
 
 test {
-    std.testing.refAllDecls(@This());
+    testing.refAllDecls(@This());
+
+    _ = @import("generator.zig");
+    _ = @import("value/Value.zig");
+    _ = @import("xml_generator.zig");
+    _ = @import("dispatcher.zig");
+    _ = @import("Decoder.zig");
+    _ = @import("Encoder.zig");
+    _ = @import("Connection.zig");
+    _ = @import("Proxy.zig");
+    _ = @import("Message.zig");
+    _ = @import("MessageHeader.zig");
+    _ = @import("MessageQueue.zig");
+    _ = @import("MethodResult.zig");
+    _ = @import("SignalHandler.zig");
+    _ = @import("SocketIterator.zig");
+    _ = @import("utils.zig");
 }

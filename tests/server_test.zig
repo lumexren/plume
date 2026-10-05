@@ -1,17 +1,13 @@
-
-
 const std = @import("std");
 const plume = @import("plume");
 const Connection = plume.Connection;
-const Signal = plume.dbus_types.Signal;
-const signal = plume.dbus_types.signal;
+const signal = plume.signal;
 const GStr = plume.Value.GStr;
-const Property = plume.dbus_types.Property;
 
 const MyInterface = struct {
     conn: *Connection,
-    ThisIsAProps: Property(i32, .ReadWrite) = plume.dbus_types.property(i32, .ReadWrite, 43),
-    thisIsAsignal: Signal(GStr) = signal("thisIsAsignal", GStr),
+    ThisIsAProps: plume.Property(i32, .ReadWrite) = plume.property(i32, .ReadWrite, 43),
+    thisIsAsignal: plume.Signal(GStr) = signal("thisIsAsignal", GStr),
 
     pub const INTERFACE_NAME = "dev.myinterface.test";
 
@@ -34,15 +30,14 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("Initializing connection...\n", .{});
     // NOTE: This requires a running DBus session bus.
-    var conn = try Connection.init(init.io, allocator, init.environ_map, .Session);
+    var conn: Connection = try .init(init.io, allocator, .Session, init.environ_map);
     defer conn.close();
 
     std.debug.print("Registering interface {s}...\n", .{MyInterface.INTERFACE_NAME});
-    const handle = try conn.registerObject(MyInterface, "dev.myinterface.test", "/dev/myinterface/test", {});
+    try conn.registerObject(MyInterface, "dev.myinterface.test", "/dev/myinterface/test", {});
 
-    std.debug.print("Service registered. Handle: {d}\n", .{handle});
-    std.debug.print("Ready to serve requests.\n", .{});
+    std.debug.print("Service registered. Ready to serve requests.\n", .{});
 
     // Uncomment to run loop:
-    try conn.waitOnHandle(handle);
+    try conn.serve();
 }

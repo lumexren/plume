@@ -17,16 +17,37 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
-pub const GVariantTag = @import("GVariantTag.zig").GVariantTag;
-
-const GUFd = @import("GUFd.zig");
-const GStr = @import("GStr.zig");
 const GPath = @import("GPath.zig");
 const GSig = @import("GSig.zig");
+const GStr = @import("GStr.zig");
+const GUFd = @import("GUFd.zig");
 
 const std = @import("std");
 const StringHashMap = std.StringHashMap;
 const Allocator = std.mem.Allocator;
+
+pub const GVariantTag = enum {
+    byte,
+    boolean,
+    int16,
+    uint16,
+    int32,
+    uint32,
+    int64,
+    uint64,
+    double,
+    ufd,
+    string,
+    object_path,
+    signature,
+
+    array,
+    tuple,
+
+    dict,
+
+    variant,
+};
 
 pub const GVariant = union(GVariantTag) {
     byte: u8,
@@ -46,6 +67,7 @@ pub const GVariant = union(GVariantTag) {
 
     array: []GVariant,
     tuple: []GVariant,
+
     dict: StringHashMap(GVariant),
 
     /// Variants can nest variants

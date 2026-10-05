@@ -18,38 +18,29 @@
 // along with this program. If not, see <https://gnu.org/licenses>.
 
 const std = @import("std");
-const ArrayList = std.ArrayList;
-const ascii = std.ascii;
-const mem = std.mem;
-const Allocator = mem.Allocator;
 
-/// Represents a D-Bus introspection argument (method or signal parameter).
 pub const Arg = struct {
     name: []const u8,
     type: []const u8,
     direction: []const u8 = "in",
 };
 
-/// Represents a D-Bus method with its name and arguments.
 pub const Method = struct {
     name: []const u8,
     args: []const Arg,
 };
 
-/// Represents a D-Bus signal with its name and arguments.
 pub const Signal = struct {
     name: []const u8,
     args: []const Arg,
 };
 
-/// Represents a D-Bus property with its name, type, and access mode.
 pub const Property = struct {
     name: []const u8,
     type: []const u8,
     access: []const u8,
 };
 
-/// Represents a D-Bus interface containing methods, signals, and properties.
 pub const Interface = struct {
     name: []const u8,
     methods: []const Method,
@@ -61,29 +52,25 @@ pub const Interface = struct {
 pub const Node = struct {
     name: []const u8 = "",
     interfaces: []const Interface,
-    children: []const @This(),
+    children: []const Node,
 
     /// Recursively releases memory used by the node and its children.
-    pub fn deinit(this: @This(), allocator: Allocator) void {
-        for (this.interfaces) |iface| {
+    pub fn deinit(self: Node, allocator: std.mem.Allocator) void {
+        for (self.interfaces) |iface| {
             for (iface.methods) |m| allocator.free(m.args);
             for (iface.signals) |s| allocator.free(s.args);
             allocator.free(iface.methods);
             allocator.free(iface.signals);
             allocator.free(iface.properties);
         }
-
-        allocator.free(this.interfaces);
-
-        for (this.children) |child| {
+        allocator.free(self.interfaces);
+        for (self.children) |child| {
             child.deinit(allocator);
         }
-
-        allocator.free(this.children);
+        allocator.free(self.children);
     }
 };
 
-/// Represents an XML tag with name, attributes, and closing/self-closing flags (internal helper).
 const Tag = struct {
     name: []const u8,
     attrs: []const u8,
@@ -95,32 +82,32 @@ const Scanner = struct {
     xml: []const u8,
     pos: usize = 0,
 
-    fn nextTag(this: *@This()) ?Tag {
-        while (this.pos < this.xml.len) {
+    fn nextTag(self: *Scanner) ?Tag {
+        while (self.pos < self.xml.len) {
             // Find start of tag
-            const start = mem.findScalarPos(u8, this.xml, this.pos, '<') orelse return null;
-            this.pos = start + 1;
+            const start = std.mem.findScalarPos(u8, self.xml, self.pos, '<') orelse return null;
+            self.pos = start + 1;
 
-            if (this.pos >= this.xml.len) return null;
+            if (self.pos >= self.xml.len) return null;
 
             // Handle comments <!-- ... -->
-            if (mem.startsWith(u8, this.xml[this.pos..], "!--")) {
-                if (mem.find(u8, this.xml[this.pos..], "-->")) |end| {
-                    this.pos += end + 3;
+            if (std.mem.startsWith(u8, self.xml[self.pos..], "!--")) {
+                if (std.mem.find(u8, self.xml[self.pos..], "-->")) |end| {
+                    self.pos += end + 3;
                     continue;
                 }
             }
             // Handle declarations <? ... ?> or <! ... >
-            if (this.xml[this.pos] == '?' or this.xml[this.pos] == '!') {
-                if (mem.findScalarPos(u8, this.xml, this.pos, '>')) |end| {
-                    this.pos = end + 1;
+            if (self.xml[self.pos] == '?' or self.xml[self.pos] == '!') {
+                if (std.mem.findScalarPos(u8, self.xml, self.pos, '>')) |end| {
+                    self.pos = end + 1;
                     continue;
                 }
             }
 
-            const end = mem.findScalarPos(u8, this.xml, this.pos, '>') orelse return null;
-            const content = mem.trim(u8, this.xml[this.pos..end], " \t\r\n");
-            this.pos = end + 1;
+            const end = std.mem.findScalarPos(u8, self.xml, self.pos, '>') orelse return null;
+            const content = std.mem.trim(u8, self.xml[self.pos..end], " \t\r\n");
+            self.pos = end + 1;
 
             if (content.len == 0) continue;
 
@@ -134,52 +121,50 @@ const Scanner = struct {
             }
             if (!is_closing and actual_content[actual_content.len - 1] == '/') {
                 is_self_closing = true;
-                actual_content = mem.trimEnd(u8, actual_content[0 .. actual_content.len - 1], " \t\r\n");
+                actual_content = std.mem.trimEnd(u8, actual_content[0 .. actual_content.len - 1], " \t\r\n");
             }
 
             // Split name and attributes
             var name_end: usize = 0;
-            while (name_end < actual_content.len and !ascii.isWhitespace(actual_content[name_end])) : (name_end += 1) {}
+            while (name_end < actual_content.len and !std.ascii.isWhitespace(actual_content[name_end])) : (name_end += 1) {}
 
-            return .{
+            return Tag{
                 .name = actual_content[0..name_end],
                 .attrs = if (name_end < actual_content.len) actual_content[name_end..] else "",
                 .is_closing = is_closing,
                 .is_self_closing = is_self_closing,
             };
         }
-
         return null;
     }
 };
 
 /// Parses a D-Bus introspection XML string into a Node tree.
-pub fn parse(allocator: Allocator, xml: []const u8) !Node {
-    var scanner: Scanner = .{ .xml = xml };
-    var interfaces: ArrayList(Interface) = try .initCapacity(allocator, 0);
+pub fn parse(allocator: std.mem.Allocator, xml: []const u8) !Node {
+    var scanner = Scanner{ .xml = xml };
+    var interfaces = try std.ArrayList(Interface).initCapacity(allocator, 0);
     errdefer {
         for (interfaces.items) |iface| {
+            for (iface.methods) |m| allocator.free(m.args);
+            for (iface.signals) |s| allocator.free(s.args);
             allocator.free(iface.methods);
             allocator.free(iface.signals);
             allocator.free(iface.properties);
         }
         interfaces.deinit(allocator);
     }
-
-    var children: ArrayList(Node) = try .initCapacity(allocator, 0);
+    var children = try std.ArrayList(Node).initCapacity(allocator, 0);
     errdefer {
-        for (children.items) |child| {
-            child.deinit(allocator);
-        }
+        for (children.items) |child| child.deinit(allocator);
         children.deinit(allocator);
     }
 
     while (scanner.nextTag()) |tag| {
         if (tag.is_closing) continue;
 
-        if (mem.eql(u8, tag.name, "interface")) {
+        if (std.mem.eql(u8, tag.name, "interface")) {
             try interfaces.append(allocator, try parseInterface(allocator, tag, &scanner));
-        } else if (mem.eql(u8, tag.name, "node")) {
+        } else if (std.mem.eql(u8, tag.name, "node")) {
             if (getAttr(tag.attrs, "name")) |name| {
                 if (name.len > 0) {
                     try children.append(allocator, .{ .name = name, .interfaces = &.{}, .children = &.{} });
@@ -188,32 +173,40 @@ pub fn parse(allocator: Allocator, xml: []const u8) !Node {
         }
     }
 
-    return .{
+    return Node{
         .interfaces = try interfaces.toOwnedSlice(allocator),
         .children = try children.toOwnedSlice(allocator),
     };
 }
 
-fn parseInterface(allocator: Allocator, root_tag: Tag, scanner: *Scanner) !Interface {
+fn parseInterface(allocator: std.mem.Allocator, root_tag: Tag, scanner: *Scanner) !Interface {
     const name = getAttr(root_tag.attrs, "name") orelse "unknown";
+    var methods = try std.ArrayList(Method).initCapacity(allocator, 0);
+    errdefer {
+        for (methods.items) |m| allocator.free(m.args);
+        methods.deinit(allocator);
+    }
+    var signals = try std.ArrayList(Signal).initCapacity(allocator, 0);
+    errdefer {
+        for (signals.items) |s| allocator.free(s.args);
+        signals.deinit(allocator);
+    }
+    var properties = try std.ArrayList(Property).initCapacity(allocator, 0);
+    errdefer properties.deinit(allocator);
 
-    var methods: ArrayList(Method) = try .initCapacity(allocator, 0);
-    var signals: ArrayList(Signal) = try .initCapacity(allocator, 0);
-    var properties: ArrayList(Property) = try .initCapacity(allocator, 0);
-
-    if (root_tag.is_self_closing) return .{ .name = name, .methods = &.{}, .signals = &.{}, .properties = &.{} };
+    if (root_tag.is_self_closing) return Interface{ .name = name, .methods = &.{}, .signals = &.{}, .properties = &.{} };
 
     while (scanner.nextTag()) |tag| {
         if (tag.is_closing) {
-            if (mem.eql(u8, tag.name, "interface")) break;
+            if (std.mem.eql(u8, tag.name, "interface")) break;
             continue;
         }
 
-        if (mem.eql(u8, tag.name, "method")) {
+        if (std.mem.eql(u8, tag.name, "method")) {
             try methods.append(allocator, try parseMethod(allocator, tag, scanner));
-        } else if (mem.eql(u8, tag.name, "signal")) {
+        } else if (std.mem.eql(u8, tag.name, "signal")) {
             try signals.append(allocator, try parseSignal(allocator, tag, scanner));
-        } else if (mem.eql(u8, tag.name, "property")) {
+        } else if (std.mem.eql(u8, tag.name, "property")) {
             try properties.append(allocator, .{
                 .name = getAttr(tag.attrs, "name") orelse "unknown",
                 .type = getAttr(tag.attrs, "type") orelse "",
@@ -223,7 +216,7 @@ fn parseInterface(allocator: Allocator, root_tag: Tag, scanner: *Scanner) !Inter
         }
     }
 
-    return .{
+    return Interface{
         .name = name,
         .methods = try methods.toOwnedSlice(allocator),
         .signals = try signals.toOwnedSlice(allocator),
@@ -231,19 +224,19 @@ fn parseInterface(allocator: Allocator, root_tag: Tag, scanner: *Scanner) !Inter
     };
 }
 
-fn parseMethod(allocator: Allocator, root_tag: Tag, scanner: *Scanner) !Method {
+fn parseMethod(allocator: std.mem.Allocator, root_tag: Tag, scanner: *Scanner) !Method {
     const name = getAttr(root_tag.attrs, "name") orelse "unknown";
-    var args: ArrayList(Arg) = try .initCapacity(allocator, 0);
+    var args = try std.ArrayList(Arg).initCapacity(allocator, 0);
+    errdefer args.deinit(allocator);
 
-    if (root_tag.is_self_closing) return .{ .name = name, .args = &.{} };
+    if (root_tag.is_self_closing) return Method{ .name = name, .args = &.{} };
 
     while (scanner.nextTag()) |tag| {
         if (tag.is_closing) {
-            if (mem.eql(u8, tag.name, "method")) break;
+            if (std.mem.eql(u8, tag.name, "method")) break;
             continue;
         }
-
-        if (mem.eql(u8, tag.name, "arg")) {
+        if (std.mem.eql(u8, tag.name, "arg")) {
             try args.append(allocator, .{
                 .name = getAttr(tag.attrs, "name") orelse "",
                 .type = getAttr(tag.attrs, "type") orelse "",
@@ -251,23 +244,22 @@ fn parseMethod(allocator: Allocator, root_tag: Tag, scanner: *Scanner) !Method {
             });
         }
     }
-
-    return .{ .name = name, .args = try args.toOwnedSlice(allocator) };
+    return Method{ .name = name, .args = try args.toOwnedSlice(allocator) };
 }
 
-fn parseSignal(allocator: Allocator, root_tag: Tag, scanner: *Scanner) !Signal {
+fn parseSignal(allocator: std.mem.Allocator, root_tag: Tag, scanner: *Scanner) !Signal {
     const name = getAttr(root_tag.attrs, "name") orelse "unknown";
-    var args: ArrayList(Arg) = try .initCapacity(allocator, 0);
+    var args = try std.ArrayList(Arg).initCapacity(allocator, 0);
+    errdefer args.deinit(allocator);
 
-    if (root_tag.is_self_closing) return .{ .name = name, .args = &.{} };
+    if (root_tag.is_self_closing) return Signal{ .name = name, .args = &.{} };
 
     while (scanner.nextTag()) |tag| {
         if (tag.is_closing) {
-            if (mem.eql(u8, tag.name, "signal")) break;
+            if (std.mem.eql(u8, tag.name, "signal")) break;
             continue;
         }
-
-        if (mem.eql(u8, tag.name, "arg")) {
+        if (std.mem.eql(u8, tag.name, "arg")) {
             try args.append(allocator, .{
                 .name = getAttr(tag.attrs, "name") orelse "",
                 .type = getAttr(tag.attrs, "type") orelse "",
@@ -275,29 +267,28 @@ fn parseSignal(allocator: Allocator, root_tag: Tag, scanner: *Scanner) !Signal {
             });
         }
     }
-
-    return .{ .name = name, .args = try args.toOwnedSlice(allocator) };
+    return Signal{ .name = name, .args = try args.toOwnedSlice(allocator) };
 }
 
 fn getAttr(attrs: []const u8, name: []const u8) ?[]const u8 {
     var i: usize = 0;
     while (i + name.len + 1 < attrs.len) {
         // Find attribute name
-        if (mem.startsWith(u8, attrs[i..], name)) {
+        if (std.mem.startsWith(u8, attrs[i..], name)) {
             const next = i + name.len;
             // Check if it's followed by '=' (handling optional spaces)
             var eq_pos = next;
-            while (eq_pos < attrs.len and ascii.isWhitespace(attrs[eq_pos])) : (eq_pos += 1) {}
+            while (eq_pos < attrs.len and std.ascii.isWhitespace(attrs[eq_pos])) : (eq_pos += 1) {}
 
             if (eq_pos < attrs.len and attrs[eq_pos] == '=') {
                 var quote_pos = eq_pos + 1;
-                while (quote_pos < attrs.len and ascii.isWhitespace(attrs[quote_pos])) : (quote_pos += 1) {}
+                while (quote_pos < attrs.len and std.ascii.isWhitespace(attrs[quote_pos])) : (quote_pos += 1) {}
 
                 if (quote_pos < attrs.len) {
                     const quote = attrs[quote_pos];
                     if (quote == '"' or quote == '\'') {
                         const val_start = quote_pos + 1;
-                        if (mem.findScalarPos(u8, attrs, val_start, quote)) |val_end| {
+                        if (std.mem.findScalarPos(u8, attrs, val_start, quote)) |val_end| {
                             return attrs[val_start..val_end];
                         }
                     }
@@ -305,9 +296,8 @@ fn getAttr(attrs: []const u8, name: []const u8) ?[]const u8 {
             }
         }
         // Move to next possible attribute
-        while (i < attrs.len and !ascii.isWhitespace(attrs[i])) : (i += 1) {}
-        while (i < attrs.len and ascii.isWhitespace(attrs[i])) : (i += 1) {}
+        while (i < attrs.len and !std.ascii.isWhitespace(attrs[i])) : (i += 1) {}
+        while (i < attrs.len and std.ascii.isWhitespace(attrs[i])) : (i += 1) {}
     }
-
     return null;
 }

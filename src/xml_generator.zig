@@ -17,39 +17,69 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org/licenses>.
 
-const Value = @import("value/root.zig");
+const Value = @import("value/Value.zig");
+const Connection = @import("Connection.zig");
 
 const std = @import("std");
-const ArrayList = std.ArrayList;
-const mem = std.mem;
-const Allocator = mem.Allocator;
+
+pub const xml_prelude =
+    \\<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+    \\ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+    \\<node>
+;
+// .. Introspection XML for actual interfaces gets sandwiched inbetween these two fragments ..
+pub const xml_postlude =
+    \\  <interface name="org.freedesktop.DBus.Introspectable">
+    \\    <method name="Introspect">
+    \\      <arg name="xml_data" type="s" direction="out"/>
+    \\    </method>
+    \\  </interface>
+    \\  <interface name="org.freedesktop.DBus.Properties">
+    \\    <method name="Get">
+    \\      <arg name="interface_name" type="s" direction="in"/>
+    \\      <arg name="property_name" type="s" direction="in"/>
+    \\      <arg name="value" type="v" direction="out"/>
+    \\    </method>
+    \\    <method name="Set">
+    \\      <arg name="interface_name" type="s" direction="in"/>
+    \\      <arg name="property_name" type="s" direction="in"/>
+    \\      <arg name="value" type="v" direction="in"/>
+    \\    </method>
+    \\    <method name="GetAll">
+    \\      <arg name="interface_name" type="s" direction="in"/>
+    \\      <arg name="props" type="a{sv}" direction="out"/>
+    \\    </method>
+    \\    <signal name="PropertiesChanged">
+    \\      <arg name="interface_name" type="s"/>
+    \\      <arg name="changed_properties" type="a{sv}"/>
+    \\      <arg name="invalidated_properties" type="as"/>
+    \\    </signal>
+    \\  </interface>
+    \\</node>
+;
 
 /// Generates a D-Bus introspection XML string for a Zig type T.
-pub fn generateIntrospectionXml(allocator: Allocator, comptime T: type, interface_name: []const u8) ![:0]const u8 {
-    var out: ArrayList(u8) = try .initCapacity(allocator, 1024);
+pub fn generateIntrospectionXml(allocator: std.mem.Allocator, comptime T: type, interface_name: []const u8) ![]const u8 {
+    var out = try std.ArrayList(u8).initCapacity(allocator, 1024);
     errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"");
-    try out.appendSlice(allocator, " \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n");
-    try out.appendSlice(allocator, "<node>\n");
 
     try out.print(allocator, "  <interface name=\"{s}\">\n", .{interface_name});
 
     // Methods
-    inline for (@typeInfo(T).@"struct".decl_names) |decl| {
-        const field_val = @field(T, decl);
+    inline for (@typeInfo(T).@"struct".decl_names) |decl_name| {
+        const field_val = @field(T, decl_name);
         const field_type = @TypeOf(field_val);
 
         if (@typeInfo(field_type) == .@"fn") {
-            if (!mem.eql(u8, decl, "init")) {
+            if (!std.mem.eql(u8, decl_name, "init")) {
                 const fn_info = @typeInfo(field_type).@"fn";
                 // Check if it looks like a method (first arg is *T)
-                if (fn_info.param_attrs.len > 0 and fn_info.param_types[0] == *T) {
-                    try out.print(allocator, "    <method name=\"{s}\">\n", .{decl});
+                if (fn_info.param_types.len > 0 and fn_info.param_types[0] == *T) {
+                    try out.print(allocator, "    <method name=\"{s}\">\n", .{decl_name});
 
                     // Args (skip first which is self)
-                    inline for (fn_info.param_types[1..], 0..) |param, i| {
-                        if (param.type) |PT| {
+                    inline for (fn_info.param_types[1..], 0..) |param_type, i| {
+                        if (param_type) |PT| {
                             const sig = try getSignature(allocator, PT);
                             defer allocator.free(sig);
                             try out.print(allocator, "      <arg name=\"arg{d}\" type=\"{s}\" direction=\"in\"/>\n", .{ i, sig });
@@ -75,11 +105,13 @@ pub fn generateIntrospectionXml(allocator: Allocator, comptime T: type, interfac
         }
     }
 
+    const typeInfo = @typeInfo(T).@"struct";
+
     // Signals
-    inline for (@typeInfo(T).@"struct".field_types, @typeInfo(T).@"struct".field_names) |field_type, field_name| {
-        if (@typeInfo(field_type) == .@"struct" and @hasDecl(field_type, "__is_plume_signal")) {
-            const PayloadT = field_type.PayloadType;
-            try out.print(allocator, "    <signal name=\"{s}\">\n", .{field_name});
+    inline for (typeInfo.field_names, typeInfo.field_types) |FieldName, FieldType| {
+        if (@typeInfo(FieldType) == .@"struct" and @hasDecl(FieldType, "__is_plume_signal")) {
+            const PayloadT = FieldType.PayloadType;
+            try out.print(allocator, "    <signal name=\"{s}\">\n", .{FieldName});
             if (PayloadT != void) {
                 const sig = try getSignature(allocator, PayloadT);
                 defer allocator.free(sig);
@@ -90,62 +122,33 @@ pub fn generateIntrospectionXml(allocator: Allocator, comptime T: type, interfac
     }
 
     // Properties
-    inline for (@typeInfo(T).@"struct".field_types, @typeInfo(T).@"struct".field_names) |field_type, field_name| {
-        const type_info = @typeInfo(field_type);
+    inline for (typeInfo.field_names, typeInfo.field_types) |FieldName, FieldType| {
+        const type_info = @typeInfo(FieldType);
 
         // Skip signals and connection
-        if (type_info == .@"struct" and @hasDecl(field_type, "__is_plume_signal")) continue;
-        if (comptime mem.eql(u8, field_name, "conn")) continue;
-        if (type_info == .pointer and type_info.pointer.size != .slice) continue; // Skip unsupported pointers
+        if (comptime (type_info == .@"struct" and @hasDecl(FieldType, "__is_plume_signal"))) continue;
+        if (comptime (FieldType == *Connection or std.mem.eql(u8, FieldName, "conn") or std.mem.eql(u8, FieldName, "connection"))) continue;
+        if (comptime (type_info == .pointer and type_info.pointer.size != .slice)) continue; // Skip unsupported pointers
 
-        const is_wrapped = type_info == .@"struct" and @hasDecl(field_type, "__is_plume_property");
-        const access: []const u8 = if (is_wrapped) switch (field_type.AccessMode) {
+        const is_wrapped = type_info == .@"struct" and @hasDecl(FieldType, "__is_plume_property");
+        const access: []const u8 = if (is_wrapped) switch (FieldType.AccessMode) {
             .Read => "read",
             .Write => "write",
             .ReadWrite => "readwrite",
         } else "read";
-        const DataType = if (is_wrapped) field_type.DataType else field_type;
+        const DataType = if (is_wrapped) FieldType.DataType else FieldType;
 
         const sig = try getSignature(allocator, DataType);
         defer allocator.free(sig);
-        try out.print(allocator, "    <property name=\"{s}\" type=\"{s}\" access=\"{s}\"/>\n", .{ field_name, sig, access });
+        try out.print(allocator, "    <property name=\"{s}\" type=\"{s}\" access=\"{s}\"/>\n", .{ FieldName, sig, access });
     }
 
     try out.appendSlice(allocator, "  </interface>\n");
-    try out.appendSlice(allocator, "  <interface name=\"org.freedesktop.DBus.Introspectable\">\n");
-    try out.appendSlice(allocator, "    <method name=\"Introspect\">\n");
-    try out.appendSlice(allocator, "      <arg name=\"xml_data\" type=\"s\" direction=\"out\"/>\n");
-    try out.appendSlice(allocator, "    </method>\n");
-    try out.appendSlice(allocator, "  </interface>\n");
 
-    try out.appendSlice(allocator, "  <interface name=\"org.freedesktop.DBus.Properties\">\n");
-    try out.appendSlice(allocator, "    <method name=\"Get\">\n");
-    try out.appendSlice(allocator, "      <arg name=\"interface_name\" type=\"s\" direction=\"in\"/>\n");
-    try out.appendSlice(allocator, "      <arg name=\"property_name\" type=\"s\" direction=\"in\"/>\n");
-    try out.appendSlice(allocator, "      <arg name=\"value\" type=\"v\" direction=\"out\"/>\n");
-    try out.appendSlice(allocator, "    </method>\n");
-    try out.appendSlice(allocator, "    <method name=\"Set\">\n");
-    try out.appendSlice(allocator, "      <arg name=\"interface_name\" type=\"s\" direction=\"in\"/>\n");
-    try out.appendSlice(allocator, "      <arg name=\"property_name\" type=\"s\" direction=\"in\"/>\n");
-    try out.appendSlice(allocator, "      <arg name=\"value\" type=\"v\" direction=\"in\"/>\n");
-    try out.appendSlice(allocator, "    </method>\n");
-    try out.appendSlice(allocator, "    <method name=\"GetAll\">\n");
-    try out.appendSlice(allocator, "      <arg name=\"interface_name\" type=\"s\" direction=\"in\"/>\n");
-    try out.appendSlice(allocator, "      <arg name=\"props\" type=\"a{sv}\" direction=\"out\"/>\n");
-    try out.appendSlice(allocator, "    </method>\n");
-    try out.appendSlice(allocator, "    <signal name=\"PropertiesChanged\">\n");
-    try out.appendSlice(allocator, "      <arg name=\"interface_name\" type=\"s\"/>\n");
-    try out.appendSlice(allocator, "      <arg name=\"changed_properties\" type=\"a{sv}\"/>\n");
-    try out.appendSlice(allocator, "      <arg name=\"invalidated_properties\" type=\"as\"/>\n");
-    try out.appendSlice(allocator, "    </signal>\n");
-    try out.appendSlice(allocator, "  </interface>\n");
-    try out.appendSlice(allocator, "</node>\n");
-
-    return try out.toOwnedSliceSentinel(allocator, 0);
+    return try out.toOwnedSlice(allocator);
 }
 
-/// Computes the D-Bus type signature string for a given type (internal helper).
-fn getSignature(allocator: Allocator, comptime T: type) ![:0]const u8 {
+fn getSignature(allocator: std.mem.Allocator, comptime T: type) ![:0]const u8 {
     const len = Value.reprLength(T);
     var sig_buf: [256]u8 = undefined;
     if (len > 256) return error.SignatureTooLong;

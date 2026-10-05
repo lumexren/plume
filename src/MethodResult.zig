@@ -21,27 +21,27 @@
 /// Owns the reply message and provides methods to decode its body.
 const MethodResult = @This();
 
-const Message = @import("message/root.zig");
 const Connection = @import("Connection.zig");
+const Message = @import("Message.zig");
 const Decoder = @import("Decoder.zig");
 
 const std = @import("std");
-const mem = std.mem;
-const Allocator = mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 
 message: Message,
 connection: *Connection,
-allocator: Allocator,
+arena: ArenaAllocator,
 
 /// Releases resources associated with the result message.
 pub fn deinit(this: *MethodResult) void {
     this.connection.freeMessage(&this.message);
+    this.arena.deinit();
 }
 
-/// Returns a BodyDecoder to read the result body.
+/// Returns a Decoder to read the result body.
 /// Note: The decoder's lifetime is tied to the result.
 pub fn reader(this: *MethodResult) Decoder {
-    return .from(this.allocator, this.message);
+    return .fromMessage(this.arena.allocator(), this.message);
 }
 
 /// Convenience method to decode a single value of type T from the reply body.
@@ -52,9 +52,9 @@ pub fn expect(this: *MethodResult, comptime T: type) !T {
     return try dec.decode(T);
 }
 
-/// Decodes a single value of type T from the reply body and deep-copies any allocated memory
-/// using the connection's allocator.
+/// Convenience method to decode and deep-copy a value of type T from the reply body.
+/// The memory is allocated using the connection's allocator and outlives the MethodResult.
 pub fn expectAlloc(this: *MethodResult, comptime T: type) !T {
-    var dec = this.reader();
+    var dec: Decoder = .fromMessage(this.connection.allocator, this.message);
     return try dec.decodeAlloc(T);
 }

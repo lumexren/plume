@@ -1,187 +1,370 @@
-## Architecture
+# plume Wiki & API Reference
 
-plume is a lightweight, pure-Zig alternative to `libdbus` or `GDBus`. It implements the entire D-Bus stack: socket communication, SASL EXTERNAL authentication, type marshaling, method dispatch, introspection, and code generation.
+Welcome to the **plume** documentation. This guide covers the library architecture, connection lifecycle, type marshaling, client proxies, server exports, concurrency backends, and command-line tools for **Zig 0.17**.
 
-### Bus Connection
+---
 
-The `Connection` struct manages a Unix Domain Socket and performs the SASL EXTERNAL authentication handshake. It buffers stream data and runs a blocking message loop that routes incoming signals and method replies to registered handlers.
+## Table of Contents
 
-**Bus types**: `Session`, `System`, `Accessibility`.
+1. [Architecture Overview](#architecture-overview)
+2. [Connection Management](#connection-management)
+   - [Bus Types](#bus-types)
+   - [Initialization & Cleanup](#initialization--cleanup)
+   - [Concurrency Backends](#concurrency-backends)
+   - [Connection API Reference](#connection-api-reference)
+3. [Type System & Serialization](#type-system--serialization)
+   - [Type Mappings](#type-mappings)
+   - [D-Bus Value Wrappers](#d-bus-value-wrappers)
+   - [Encoder & Decoder](#encoder--decoder)
+   - [Properties & Signals](#properties--signals)
+4. [Building D-Bus Services (Server)](#building-d-bus-services-server)
+   - [Exporting a Struct](#exporting-a-struct)
+   - [Methods, Properties & Signals](#methods-properties--signals)
+   - [Serving Requests](#serving-requests)
+5. [Client Proxies](#client-proxies)
+   - [Proxy Initialization](#proxy-initialization)
+   - [Calling Methods (`MethodResult`)](#calling-methods-methodresult)
+   - [Reading & Writing Properties](#reading--writing-properties)
+   - [Subscribing to Signals](#subscribing-to-signals)
+6. [Command-Line Tools](#command-line-tools)
+   - [plume-introspection](#plume-introspection)
+   - [plume-generate](#plume-generate)
+
+---
+
+## Architecture Overview
+
+`plume` is a lightweight, pure-Zig D-Bus implementation designed without any external C dependencies (no `libdbus`, no `GDBus`/GLib).
+
+It provides complete coverage of the D-Bus specification:
+- **Unix Domain Socket transport** with SASL EXTERNAL authentication.
+- **Header & wire marshaling** conforming to the D-Bus binary protocol specification.
+- **Compile-time reflection** mapping Zig types to D-Bus signatures.
+- **Automatic introspection generator & dispatcher** for D-Bus server objects.
+- **Dynamic & static client proxy generation**.
+
+---
+
+## Connection Management
+
+### Bus Types
+
+D-Bus connections support three standard bus categories defined in `Connection.BusType`:
+- `.Session` – User session bus (resolved via `$DBUS_SESSION_BUS_ADDRESS`).
+- `.System` – System-wide message bus (default `/var/run/dbus/system_bus_socket`).
+- `.Accessibility` – Accessibility bus (resolved via session bus or a11y address).
+
+### Initialization & Cleanup
+
+In Zig 0.17, process arguments and environment variables are accessed via `std.process.Init`. `Connection.init` takes `init.io`, the allocator, the bus type, and the environment map:
 
 ```zig
-const plume = @import("plume");
 const std = @import("std");
+const plume = @import("plume");
+const Connection = plume.Connection;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-    const io = init.io;
 
-    // Connect to the session bus (bus_type can be .Session, .System, .Accessibility)
-    var conn = try plume.Connection.init(io, allocator, &init.environ_map, .Session);
+    // Connect to the session bus
+    var conn: Connection = try .init(init.io, allocator, .Session, init.environ_map);
     defer conn.close();
 
-    // ... use the connection
+    // Use connection...
 }
 ```
 
-**Key Connection methods**:
-- `init(io, allocator, map, bus_type)` – initializes socket, performs SASL EXTERNAL auth, returns a `Connection` or error.
-- `close()` – frees buffers, closes the socket, destroys registered interfaces and signal handlers.
-- `requestName(name)` – request a well‑known bus name.
-- `sendMessage(msg)` – send a raw D‑Bus message.
-- `registerObject(T, bus_name, path, userData)` – register a Zig struct as a D‑Bus object; returns a handle (`usize`) for the main loop.
-- `waitOnHandle(handle)` – blocks, dispatching method calls, signals, and introspection requests for the given registered object.
-- `addMatch(match)` – register a D‑Bus match rule (e.g. `type='signal',interface='dev.myinterface.test'`).
-- `methodCall(dest, path, iface, member, sig?, body)` – perform a synchronous method call, returns a `Message`.
-- `freeMessage(msg)` – free a message allocated by the library.
-- `registerSignalHandler(interface, member, callback, ctx)` – register a callback for a specific signal.
-- `waitMessage()` – blocks until a message is received; signals matching registered handlers are dispatched and not returned.
+### Concurrency Backends
 
-### Type System
+`plume` supports two operational modes via `Connection.Backend`:
 
-plume uses compile‑time reflection to map Zig types to D‑Bus signatures. The `Value` module provides factory types and wrappers:
+1. **`.threaded` (Default)**:
+   - Automatically manages background worker and dispatch threads.
+   - Incoming signals and method replies are queued and processed asynchronously.
+   - Safe for high-concurrency multi-threaded method invocations.
+   - Main loops use `try conn.serve()`, which parks cleanly on an OS futex until `conn.close()` is called.
 
-- **Basic numeric/boolean types**: `Int16`, `Uint16`, `Int32`, `Uint32`, `Int64`, `Uint64`, `Double`, `Byte`, `Bool`, `UnixFd`.
-- **String‑like types**: `String` (`'s'`), `ObjectPath` (`'o'`), `Signature` (`'g'`).
-- **Containers**: `Array`, `Tuple`, `Dict`, `Variant`, `Struct`.
-- **Utility functions**: `dbusAlignOf`, `reprLength`, `getRepr`, `doesImplementSer`, `isDict`.
+2. **`.poll` (Single-Threaded)**:
+   - Does **not** spawn background threads.
+   - Ideal for single-threaded CLI apps, game loops, or event-loop integrations (`epoll`/`poll`/`io_uring`).
+   - Created with `Connection.initWithBackend`:
+     ```zig
+     var conn: Connection = try .initWithBackend(init.io, allocator, .Session, init.environ_map, .poll);
+     defer conn.close();
 
-Wrappers for D‑Bus specific concepts:
-- `GStr` – UTF‑8 string (`'s'`).
-- `GPath` – D‑Bus object path (`'o'`).
-- `GSig` – D‑Bus signature (`'g'`).
-- `GUFd` – Unix file descriptor (`'h'`).
-- `GVariant` – dynamic variant union type.
+     const fd = conn.getFd();
+     // In your event loop when fd is readable:
+     _ = try conn.pollDispatch();
+     ```
 
-The `dbus_types` module provides high‑level helpers for properties and signals:
+### Connection API Reference
+
+| Method | Description |
+|---|---|
+| `init(io, allocator, bus_type, environ_map) !Connection` | Connects and authenticates over the specified bus. |
+| `initWithBackend(io, allocator, bus_type, environ_map, backend) !Connection` | Connects with an explicit concurrency backend (`.threaded` or `.poll`). |
+| `close() void` | Closes the socket, terminates background threads, and frees allocated structures. |
+| `requestName(name: [:0]const u8) !void` | Requests a well-known bus name (e.g. `org.example.App`). |
+| `registerObject(comptime T, bus_name, path, userData) !void` | Registers a struct `T` as a D-Bus object at `path` on `bus_name`. |
+| `serve() !void` | Runs the main server loop (blocks until connection is closed). |
+| `addMatch(match_rule: [:0]const u8) !void` | Adds a D-Bus routing match rule (e.g. `type='signal',interface='...'`). |
+| `registerSignalHandler(iface, member, callback, ctx) !void` | Registers a callback for matching signals. |
+| `methodCall(dest, path, iface, member, signature?, body) !Message` | Performs a synchronous method call and returns a reply `Message`. |
+| `freeMessage(message: *Message) void` | Frees a message buffer allocated by the connection. |
+| `getFd() i32` | Returns the underlying socket file descriptor (useful in `.poll` backend). |
+| `pollDispatch() !bool` | Reads and dispatches pending messages without background threads. |
+
+---
+
+## Type System & Serialization
+
+### Type Mappings
+
+`plume` uses comptime type inspection to map Zig types to D-Bus signatures:
+
+| Zig Type | D-Bus Type | Signature |
+|---|---|---|
+| `u8` | BYTE | `y` |
+| `bool` | BOOLEAN | `b` |
+| `i16` | INT16 | `n` |
+| `u16` | UINT16 | `q` |
+| `i32` | INT32 | `i` |
+| `u32` | UINT32 | `u` |
+| `i64` | INT64 | `x` |
+| `u64` | UINT64 | `t` |
+| `f64` | DOUBLE | `d` |
+| `GStr` (`[:0]const u8`) | STRING | `s` |
+| `GPath` | OBJECT_PATH | `o` |
+| `GSig` | SIGNATURE | `g` |
+| `GUFd` (`posix.fd_t`) | UNIX_FD | `h` |
+| `[]const T` / `Value.Array(T)` | ARRAY | `a...` |
+| `struct { ... }` / `@Tuple(...)` | STRUCT | `(...)` |
+| `std.StringHashMap(V)` | DICT | `a{sv}` / `a{s...}` |
+| `std.AutoHashMap(K, V)` | DICT | `a{...}` |
+| `GVariant` / `Value.Variant(T)` | VARIANT | `v` |
+
+### D-Bus Value Wrappers
+
+Located in `plume.Value`:
+- **`GStr`**: D-Bus string wrapper. Use `GStr.new("hello")`.
+- **`GPath`**: D-Bus object path wrapper. Use `GPath.new("/org/example/Path")`.
+- **`GSig`**: D-Bus type signature wrapper. Use `GSig.new("s")`.
+- **`GUFd`**: Unix file descriptor wrapper. Use `GUFd.new(fd)`.
+- **`GVariant`**: Tagged union capable of holding arbitrary D-Bus primitive and container variants.
+
+### Encoder & Decoder
+
+Use `Encoder` and `Decoder` directly for low-level serialization:
 
 ```zig
 const plume = @import("plume");
+const Encoder = plume.Encoder;
+const Decoder = plume.Decoder;
+const GStr = plume.Value.GStr;
 
-// Property with read‑write access, default 0
-const MyProp = plume.property(i32, .ReadWrite, 0);
+// Encoding a single value or tuple of values
+var encoder: Encoder = try .encode(allocator, .{ GStr.new("test"), @as(u32, 123) });
+defer encoder.deinit();
 
-// Signal definition
-const MySignal = plume.signal("Tick", i32);
+const body = encoder.body();
+const signature = encoder.signature(); // "su"
+
+// Decoding from an existing buffer or Message
+var decoder: Decoder = .init(allocator, body, signature, .little);
+const str = try decoder.decode(GStr);
+const num = try decoder.decode(u32);
+
+// Or decode directly from a reply Message:
+var msg_dec: Decoder = .fromMessage(allocator, reply);
+const res = try msg_dec.decode(GStr);
 ```
 
-### Method Dispatcher
+### Properties & Signals
 
-A Zig struct can be exported as a D‑Bus object. The library analyses public methods and fields to set up automatic routing. It also generates introspection XML and exposes the standard `org.freedesktop.DBus.Properties` interface.
-
-A registered interface struct must provide:
-- `pub fn init(conn: *Connection, userData: anytype) @This()` – called by `registerObject`.
-- Public methods with signatures `pub fn method(self: *T, ...) !ReturnType`.
-- Optional `pub const INTERFACE_NAME = "..."` (defaults to the registered bus name).
-- Signal fields using `plume.signal("name", PayloadType)`.
-- Property fields using `plume.property(Type, Access, value)`.
+Define properties and signals in service structs using `plume.property` and `plume.signal`:
 
 ```zig
-const MyInterface = struct {
-    conn: *plume.Connection,
-    Count: plume.dbus_types.Property(i32, .ReadWrite) = plume.property(i32, .ReadWrite, 0),
-    Tick: plume.dbus_types.Signal(i32) = plume.signal("Tick", i32),
+// Read-write property of type i32 with initial value 42
+var count = plume.property(i32, .ReadWrite, 42);
 
-    pub fn init(conn: *plume.Connection, _: void) @This() {
+// Read-only property
+var version = plume.property(plume.Value.GStr, .Read, plume.Value.GStr.new("1.0.0"));
+
+// Signal definition with payload type GStr
+var updated_signal = plume.signal("Updated", plume.Value.GStr);
+
+// Triggering a signal from a service:
+try updated_signal.trigger(conn, plume.Value.GStr.new("data"));
+```
+
+---
+
+## Building D-Bus Services (Server)
+
+### Exporting a Struct
+
+Any Zig struct can be exported as a full-featured D-Bus object:
+1. Provide a `conn: *Connection` field (or `connection: *Connection`).
+2. Implement `pub fn init(conn: *Connection, userData: anytype) @This()`.
+3. Provide an optional `pub const INTERFACE_NAME = "org.example.MyService";` declaration.
+4. Export public methods and properties.
+
+`plume` automatically handles:
+- Routing incoming method calls by name.
+- Standard `org.freedesktop.DBus.Properties` interface (`Get`, `Set`, `GetAll`).
+- Standard `org.freedesktop.DBus.Introspectable` XML generation.
+
+### Complete Server Example
+
+```zig
+const std = @import("std");
+const plume = @import("plume");
+const Connection = plume.Connection;
+const GStr = plume.Value.GStr;
+
+const CalcService = struct {
+    conn: *Connection,
+    Total: plume.Property(i64, .ReadWrite) = plume.property(i64, .ReadWrite, 0),
+    CalculationDone: plume.Signal(i64) = plume.signal("CalculationDone", i64),
+
+    pub const INTERFACE_NAME = "org.example.Calculator";
+
+    pub fn init(conn: *Connection, _: void) @This() {
         return .{ .conn = conn };
     }
 
-    pub fn Increment(self: *MyInterface) !i32 {
-        self.Count.value += 1;
-        try self.Tick.trigger(self.conn, self.Count.value);
-        return self.Count.value;
+    // Method: Add(a: i64, b: i64) -> i64
+    pub fn Add(self: *CalcService, a: i64, b: i64) !i64 {
+        const sum = a + b;
+        self.Total.value += sum;
+        try self.CalculationDone.trigger(self.conn, sum);
+        return sum;
+    }
+
+    // Method: Reset() -> void
+    pub fn Reset(self: *CalcService) void {
+        self.Total.value = 0;
     }
 };
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-    const io = init.io;
 
-    var conn = try plume.Connection.init(io, allocator, &init.environ_map, .Session);
+    var conn: Connection = try .init(init.io, allocator, .Session, init.environ_map);
     defer conn.close();
 
-    const handle = try conn.registerObject(
-        MyInterface,
-        "com.example.MyService",
-        "/com/example/MyObject",
-        {}, // user data passed into init
-    );
+    try conn.registerObject(CalcService, "org.example.Calculator", "/org/example/Calculator", {});
 
-    try conn.waitOnHandle(handle);
+    std.debug.print("Calculator service registered. Serving requests...\n", .{});
+    try conn.serve();
 }
 ```
 
-### Client Proxies
+---
 
-The `Proxy` abstraction simplifies client‑side interactions by handling construction of method call messages and parsing of replies.
+## Client Proxies
+
+The `Proxy` type encapsulates interaction with remote D-Bus objects, handling marshaling, invocation, response verification, property access, and signal subscriptions.
+
+### Proxy Initialization
 
 ```zig
 const plume = @import("plume");
 const Proxy = plume.Proxy;
-const GStr = plume.Value.GStr;
 
-pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
-    const io = init.io;
-
-    var conn = try plume.Connection.init(io, allocator, &init.environ_map, .Session);
-    defer conn.close();
-
-    // Connect to a remote object
-    const p = Proxy.init(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus");
-
-    // Call a method – returns a MethodResult owning the reply message
-    var result = try p.call("ListNames", .{});
-    defer result.deinit();
-
-    // Parse the reply (e.g. expect a specific type)
-    // var names = try result.expect([]const u8); // or use decoders
-
-    // Get a property
-    // var value = try p.getProperty(SomeType, "SomeProperty");
-
-    // Subscribe to a signal
-    // p.connectSignal(SomeSignalArgs, "SignalName", .{}, fn(ctx, args) { ... });
-}
+const p: Proxy = .init(
+    &conn,
+    "org.freedesktop.DBus",        // Destination / Bus name
+    "/org/freedesktop/DBus",       // Object path
+    "org.freedesktop.DBus",        // Default interface name
+);
 ```
 
-**Proxy API**:
-- `Proxy.init(connection, destination, path, interface)` – create a proxy.
-- `rawCall(interface, method, args)` – low‑level call, returns `!MethodResult`.
-- `call(method, args)` – convenience, forwards to `rawCall` using the default interface.
-- `getProperty(comptime T, name)` – read a property; `T` must be a variant type.
-- `setProperty(name, value)` – write a property.
-- `connectSignal(comptime SignalArgs, member, ctx, callback)` – register a typed signal handler.
+### Calling Methods (`MethodResult`)
 
-**MethodResult**:
-- `deinit()` – free the owned message.
-- `expect(comptime T)` – borrow‑style decode (may allocate internally).
-- `expectAlloc(comptime T)` – deep‑copy decode.
+Invoke methods using `.call(method_name, tuple_of_args)`:
 
-### Tools
+```zig
+var res = try p.call("NameHasOwner", .{ plume.Value.GStr.new("org.freedesktop.DBus") });
+defer res.deinit();
 
-plume ships two binaries that are installed as artifacts in `build.zig`.
+// Expect a specific return type:
+const has_owner = try res.expect(bool);
+```
 
-#### Introspector
+For return types containing allocated memory (such as arrays, slices, or hashmaps):
+- `res.expect(T)`: Borrows slices and strings directly from the message buffer (valid until `res.deinit()`).
+- `res.expectAlloc(T)`: Allocates owned copies of returned items using the connection allocator.
+
+### Reading & Writing Properties
+
+Read and write properties via `org.freedesktop.DBus.Properties`:
+
+```zig
+// Read a property
+const PropType = union(enum) { string: plume.Value.GStr, int: i32 };
+const val = try p.getProperty(PropType, "SomeProperty");
+
+// Write a property
+try p.setProperty("SomeProperty", @as(i32, 100));
+```
+
+### Subscribing to Signals
+
+Register type-safe callbacks for remote signals:
+
+```zig
+fn onSignal(ctx: *u32, args: @Tuple(&[_]type{plume.Value.GStr})) void {
+    ctx.* += 1;
+    std.debug.print("Signal received: {s}\n", .{args[0].s});
+}
+
+var counter: u32 = 0;
+try p.connectSignal(@Tuple(&[_]type{plume.Value.GStr}), "MySignalName", &counter, onSignal);
+```
+
+---
+
+## Command-Line Tools
+
+`plume` provides two tools installed under `zig-out/bin/`:
+
+### plume-introspection
+
+Inspects an existing object on the bus and prints its interfaces, methods, signals, and properties:
 
 ```bash
-./zig-out/bin/plume-introspection <destination> <path> <bus_type>
+./zig-out/bin/plume-introspection <destination> <object_path> <bus_type>
 ```
-Example:
+
+**Example:**
 ```bash
 ./zig-out/bin/plume-introspection org.freedesktop.DBus /org/freedesktop/DBus Session
 ```
-Connects to the bus, calls `Introspect` on the target, parses the XML and prints all interfaces, methods and signals.
 
-#### Proxy Generator
+Output:
+```text
+Target: org.freedesktop.DBus /org/freedesktop/DBus
+Found 6 interfaces.
+
+Interface: org.freedesktop.DBus
+  Method: Hello(s)
+  Method: RequestName(s, u, u)
+  Method: ListNames(as)
+  ...
+```
+
+### plume-generate
+
+Introspects an object and generates idiomatic, compile-ready Zig client proxy code:
 
 ```bash
-./zig-out/bin/plume-generate <destination> <path> <bus_type>
+./zig-out/bin/plume-generate <destination> <object_path> <bus_type>
 ```
-Example:
-```bash
-./zig-out/bin/plume-generate org.freedesktop.DBus /org/freedesktop/DBus Session
-```
-Connects to the bus, introspects the object, and emits complete Zig proxy source code (structs with `call`, `connectSignal`, `getProperty`, `setProperty`) to stdout.
 
-Both are installed via `b.installArtifact(plume_dep.artifact("plume-introspection"))` and `b.installArtifact(plume_dep.artifact("plume-generate"))` in `build.zig`.
+**Example:**
+```bash
+./zig-out/bin/plume-generate org.freedesktop.UPower /org/freedesktop/UPower System > upower_proxy.zig
+```
+
+The resulting file contains typed structs with `.init()`, method wrappers (`.call(...)`), typed `.connectSignal(...)` helpers, and property accessors ready to import into your Zig application.

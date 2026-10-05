@@ -20,49 +20,44 @@
 /// Helper to encode a set of values into a D-Bus message body.
 const Encoder = @This();
 
-const DBusWriter = @import("DBusWriter.zig");
-const Serializer = @import("Serializer.zig");
+const Value = @import("value/Value.zig");
+const DBusWriter = Value.DBusWriter;
+const Serializer = Value.Serializer;
+const dbusAlignOf = Value.dbusAlignOf;
 
 const std = @import("std");
-const lang = std.lang;
-const Endian = lang.Endian;
-const mem = std.mem;
 const ArrayList = std.ArrayList;
-const Allocator = mem.Allocator;
-
-const Value = @import("value/root.zig");
-const dbusAlignOf = Value.dbusAlignOf;
+const Allocator = std.mem.Allocator;
+const Endian = std.lang.Endian;
 
 allocator: Allocator,
 body_list: ArrayList(u8),
 signature_list: ArrayList(u8),
 endian: Endian = .little,
 
-/// Encodes a single value or a tuple of values into a new BodyEncoder.
+/// Encodes a single value or a tuple of values into a new Encoder.
 pub fn encode(allocator: Allocator, values: anytype) !Encoder {
-    var self: Encoder = .{
+    var this: Encoder = .{
         .allocator = allocator,
         .body_list = try .initCapacity(allocator, 256),
         .signature_list = try .initCapacity(allocator, 32),
     };
 
-    errdefer self.deinit();
+    errdefer this.deinit();
 
     const T = @TypeOf(values);
     const type_info = @typeInfo(T);
 
     if (type_info == .@"struct" and type_info.@"struct".is_tuple) {
-        inline for (values) |v| {
-            try self.appendValue(v);
-        }
+        inline for (values) |v| try this.appendValue(v);
     } else {
-        try self.appendValue(values);
+        try this.appendValue(values);
     }
 
     // Ensure signature is null-terminated
-    try self.signature_list.append(allocator, 0);
+    try this.signature_list.append(allocator, 0);
 
-    return self;
+    return this;
 }
 
 /// Releases resources used by the encoder.
@@ -71,7 +66,6 @@ pub fn deinit(this: *Encoder) void {
     this.signature_list.deinit(this.allocator);
 }
 
-/// Appends a single value to the encoder's body and signature lists (internal helper).
 fn appendValue(this: *Encoder, value: anytype) !void {
     const T = @TypeOf(value);
     if (T == void) return;
