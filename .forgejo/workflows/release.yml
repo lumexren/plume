@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - '0.17.x'
+      - '*.x'
+    paths-ignore:
+      - '**.md'
+      - '.forgejo/**'
+      - 'LICENSE*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version-file: .zigversion
+
+      - name: Run Tests
+        run: zig build test
+
+      - name: Calculate Version and Publish Release
+        env:
+          EMAIL: ${{ secrets.EMAIL }}
+        run: |
+          set -euo pipefail
+
+          VERSION=$(grep -oP '\.version\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' build.zig.zon)
+          if [ -z "$VERSION" ]; then
+            echo "Error: Version not found in build.zig.zon"
+            exit 1
+          fi
+
+          echo "Calculated release version: ${VERSION}"
+
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "Tag ${VERSION} already exists, skipping."
+            exit 0
+          fi
+
+          sed -i "s/\.version = \"[^\"]*\"/\.version = \"${VERSION}\"/" build.zig.zon
+
+          git config user.name "erenvly"
+          git config user.email "${EMAIL}"
+
+          if ! git diff --quiet build.zig.zon; then
+            git commit -am "chore(release): release ${VERSION} [skip ci]"
+          fi
+
+          git tag -a "${VERSION}" -m "Release ${VERSION}"
+
+          git push origin "${GITHUB_REF_NAME}"
+          git push origin "${VERSION}"
