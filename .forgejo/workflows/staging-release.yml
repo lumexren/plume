@@ -4,13 +4,6 @@ permissions:
   contents: write
 
 on:
-  push:
-    branches:
-      - staging
-    paths-ignore:
-      - '**.md'
-      - '.forgejo/**'
-      - 'LICENSE*'
   workflow_dispatch:
 
 jobs:
