@@ -39,6 +39,11 @@ pub const Decoder = @import("Decoder.zig");
 pub const MethodResult = @import("MethodResult.zig");
 pub const dispatcher = @import("dispatcher.zig");
 
+pub const GUFd = Value.GUFd;
+pub const ResolvedFd = Value.ResolvedFd;
+
+pub const SocketReader = @import("SocketReader.zig");
+
 // Re-export types
 const dbus_types = @import("dbus_types.zig");
 pub const Signal = dbus_types.Signal;
@@ -64,5 +69,6 @@ test {
     _ = @import("MethodResult.zig");
     _ = @import("SignalHandler.zig");
     _ = @import("SocketIterator.zig");
+    _ = @import("SocketReader.zig");
     _ = @import("utils.zig");
 }

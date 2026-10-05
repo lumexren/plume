@@ -28,6 +28,8 @@ pub const MessageHeaderFieldCode = MessageHeader.HeaderFieldCode;
 pub const MessageHeaderFieldValue = MessageHeader.HeaderFieldValue;
 pub const MessageHeaderFieldValueTag = MessageHeader.HeaderFieldValueTag;
 
+const Value = @import("value/Value.zig");
+
 const std = @import("std");
 const ArrayList = std.ArrayList;
 const mem = std.mem;
@@ -35,11 +37,44 @@ const Allocator = mem.Allocator;
 
 header: MessageHeader,
 body: []const u8,
+fds: []const std.posix.fd_t = &.{},
 allocator: ?Allocator = null,
 
 /// Creates a new Message.
 pub fn new(header: MessageHeader, body: []const u8) Message {
-    return .{ .header = header, .body = body, .allocator = null };
+    return .{ .header = header, .body = body, .fds = &.{}, .allocator = null };
+}
+
+/// Creates a new Message with attached file descriptors.
+pub fn newWithFds(header: MessageHeader, body: []const u8, fds: []const std.posix.fd_t) Message {
+    return .{ .header = header, .body = body, .fds = fds, .allocator = null };
+}
+
+/// Transfers ownership of the attached file descriptors to the caller.
+pub fn takeFds(this: *Message, alloc: Allocator) ![]std.posix.fd_t {
+    if (this.fds.len == 0) return &.{};
+
+    for (this.fds) |fd| {
+        if (fd < 0) return error.AlreadyTaken;
+    }
+
+    const result = try alloc.dupe(std.posix.fd_t, this.fds);
+
+    const mutable_fds: []std.posix.fd_t = @constCast(this.fds);
+    for (mutable_fds) |*fd| {
+        fd.* = -1;
+    }
+
+    return result;
+}
+
+/// Returns the OS file descriptor corresponding to a D-Bus handle (GUFd index).
+pub fn getFd(this: Message, ufd: Value.GUFd) ?std.posix.fd_t {
+    if (ufd.fd < this.fds.len) {
+        const fd = this.fds[ufd.fd];
+        if (fd >= 0) return fd;
+    }
+    return null;
 }
 
 /// Packs the message into its wire format.

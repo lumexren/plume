@@ -87,7 +87,7 @@ pub fn getDispatchFn(comptime T: type) fn (*const InterfaceWrapper, *Connection,
                     }
                 }
 
-                if (count == 0) break :blk union { _dummy: void };
+                if (count == 0) break :blk union(enum) { _dummy: u8 };
 
                 const c = count;
 
@@ -301,26 +301,53 @@ pub fn getDispatchFn(comptime T: type) fn (*const InterfaceWrapper, *Connection,
                                 var args: ArgsType = undefined;
                                 args[0] = self_obj;
 
-                                inline for (fn_info.param_types[1..], 1..) |param_type, i| {
-                                    args[i] = decoder.decode(param_type.?) catch {
-                                        try connection.sendError(message, "org.freedesktop.DBus.Error.InvalidArgs", "Invalid method arguments");
-                                        return .dispatched;
-                                    };
+                                var decoded_count: usize = 0;
+                                defer {
+                                    inline for (fn_info.param_types[1..], 1..) |param_type, i| {
+                                        const PT = param_type.?;
+                                        if (@typeInfo(PT) == .pointer and @typeInfo(PT).pointer.size == .slice) {
+                                            if (i <= decoded_count) {
+                                                connection.allocator.free(args[i]);
+                                            }
+                                        }
+                                    }
                                 }
 
-                                const CallRetT = fn_info.return_type.?;
-                                const result = if (@typeInfo(CallRetT) == .error_union)
-                                    @call(.auto, field_val, args) catch |err| {
+                                inline for (fn_info.param_types[1..], 1..) |param_type, i| {
+                                    if (param_type.? == Message) {
+                                        args[i] = message;
+                                    } else if (param_type.? == *const Message) {
+                                        args[i] = &message;
+                                    } else if (param_type.? == *Message) {
+                                        args[i] = @constCast(&message);
+                                    } else if (param_type.? == *Connection) {
+                                        args[i] = connection;
+                                    } else {
+                                        args[i] = decoder.decode(param_type.?) catch {
+                                            try connection.sendError(message, "org.freedesktop.DBus.Error.InvalidArgs", "Invalid method arguments");
+                                            return .dispatched;
+                                        };
+                                    }
+                                    decoded_count = i;
+                                }
+
+                                const RetType = fn_info.return_type orelse void;
+                                if (@typeInfo(RetType) == .error_union) {
+                                    const result = @call(.auto, field_val, args) catch |err| {
                                         try connection.sendError(message, "org.freedesktop.DBus.Error.Failed", @errorName(err));
                                         return .dispatched;
-                                    }
-                                else
-                                    @call(.auto, field_val, args);
-
-                                var encoder: Encoder = try .encode(connection.allocator, result);
-                                defer encoder.deinit();
-                                try connection.sendReply(message, encoder);
-                                return .dispatched;
+                                    };
+                                    var encoder: Encoder = try .encode(connection.allocator, result);
+                                    defer encoder.deinit();
+                                    try connection.sendReply(message, encoder);
+                                    return .dispatched;
+                                } else {
+                                    const result = @call(.auto, field_val, args);
+                                    var encoder: Encoder = try .encode(connection.allocator, result);
+                                    defer encoder.deinit();
+                                    try connection.sendReply(message, encoder);
+                                    return .dispatched;
+                                }
                             }
                         }
                     }

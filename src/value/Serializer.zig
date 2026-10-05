@@ -24,6 +24,7 @@ const GPath = Value.GPath;
 const GSig = Value.GSig;
 const GStr = Value.GStr;
 const GUFd = Value.GUFd;
+const ResolvedFd = Value.ResolvedFd;
 const DBusWriter = @import("DBusWriter.zig");
 
 const std = @import("std");
@@ -84,6 +85,9 @@ pub fn trySerialize(comptime T: type, data: T, w: *DBusWriter) !void {
         return;
     } else if (T == GUFd) {
         try Value.UnixFd().new(data.fd).ser(w);
+        return;
+    } else if (T == ResolvedFd) {
+        try Value.UnixFd().new(data.index).ser(w);
         return;
     }
 

@@ -19,6 +19,7 @@
 
 const Value = @import("value/Value.zig");
 const Connection = @import("Connection.zig");
+const Message = @import("Message.zig");
 
 const std = @import("std");
 
@@ -80,6 +81,7 @@ pub fn generateIntrospectionXml(allocator: std.mem.Allocator, comptime T: type, 
                     // Args (skip first which is self)
                     inline for (fn_info.param_types[1..], 0..) |param_type, i| {
                         if (param_type) |PT| {
+                            if (PT == Message or PT == *const Message or PT == *Message or PT == *Connection) continue;
                             const sig = try getSignature(allocator, PT);
                             defer allocator.free(sig);
                             try out.print(allocator, "      <arg name=\"arg{d}\" type=\"{s}\" direction=\"in\"/>\n", .{ i, sig });

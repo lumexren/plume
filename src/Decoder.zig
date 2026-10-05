@@ -37,10 +37,22 @@ signature: []const u8,
 pos: usize = 0,
 sig_pos: usize = 0,
 endian: Endian,
+fds: []const std.posix.fd_t = &.{},
 
 /// Initializes a decoder with raw body and signature.
 pub fn init(allocator: Allocator, body: []const u8, signature: []const u8, endian: Endian) Decoder {
-    return .{ .allocator = allocator, .body = body, .signature = signature, .endian = endian };
+    return .{ .allocator = allocator, .body = body, .signature = signature, .endian = endian, .fds = &.{} };
+}
+
+/// Initializes a decoder with raw body, signature, and out-of-band file descriptors.
+pub fn initWithFds(allocator: Allocator, body: []const u8, signature: []const u8, endian: Endian, fds: []const std.posix.fd_t) Decoder {
+    return .{
+        .allocator = allocator,
+        .body = body,
+        .signature = signature,
+        .endian = endian,
+        .fds = fds,
+    };
 }
 
 /// Initializes a decoder from a Message, extracting the signature from header fields.
@@ -58,6 +70,7 @@ pub fn fromMessage(allocator: Allocator, message: Message) Decoder {
         .body = message.body,
         .signature = sig,
         .endian = message.header.endianess,
+        .fds = message.fds,
     };
 }
 
@@ -202,6 +215,21 @@ fn readVal(this: *Decoder, comptime T: type, comptime deep_copy: bool) anyerror!
                 } else {
                     return T.new(s);
                 }
+            } else if (T == Value.GUFd) {
+                this.alignTo(4);
+                if (this.pos + 4 > this.body.len) return error.EndOfBody;
+                const val = mem.readInt(u32, this.body[this.pos..][0..4], this.endian);
+                this.pos += 4;
+                return Value.GUFd.new(val);
+            } else if (T == Value.ResolvedFd) {
+                this.alignTo(4);
+                if (this.pos + 4 > this.body.len) return error.EndOfBody;
+                const idx = mem.readInt(u32, this.body[this.pos..][0..4], this.endian);
+                this.pos += 4;
+                if (idx >= this.fds.len) return error.MissingUnixFds;
+                const os_fd = this.fds[idx];
+                if (os_fd < 0) return error.AlreadyTaken;
+                return Value.ResolvedFd.init(os_fd, idx);
             }
 
             // Generic struct/tuple/dict-entry support
@@ -487,4 +515,45 @@ fn alignOfDynamicType(sig: []const u8, sig_pos: usize) anyerror!usize {
         'x', 't', 'd', '(', '{' => return 8,
         else => return error.UnsupportedDynamicType,
     }
+}
+
+test "Encoder and Decoder ResolvedFd and []ResolvedFd" {
+    const testing = std.testing;
+    const Encoder = @import("Encoder.zig");
+    const allocator = testing.allocator;
+
+    const mock_fds = [_]std.posix.fd_t{ 42, 84 };
+    var enc1 = try Encoder.encode(allocator, Value.GUFd.new(1));
+    defer enc1.deinit();
+
+    try testing.expectEqualStrings("h", enc1.signature());
+
+    var dec1 = Decoder.initWithFds(allocator, enc1.body(), enc1.signature(), .little, &mock_fds);
+    const rfd = try dec1.decode(Value.ResolvedFd);
+    try testing.expectEqual(@as(u32, 1), rfd.index);
+    try testing.expectEqual(@as(std.posix.fd_t, 84), rfd.handle);
+
+    const fd_indices = [_]Value.ResolvedFd{
+        Value.ResolvedFd.init(-1, 0),
+        Value.ResolvedFd.init(-1, 1),
+    };
+    var enc2 = try Encoder.encode(allocator, &fd_indices);
+    defer enc2.deinit();
+
+    try testing.expectEqualStrings("ah", enc2.signature());
+
+    var dec2 = Decoder.initWithFds(allocator, enc2.body(), enc2.signature(), .little, &mock_fds);
+    const resolved_slice = try dec2.decode([]Value.ResolvedFd);
+    defer allocator.free(resolved_slice);
+
+    try testing.expectEqual(@as(usize, 2), resolved_slice.len);
+    try testing.expectEqual(@as(u32, 0), resolved_slice[0].index);
+    try testing.expectEqual(@as(std.posix.fd_t, 42), resolved_slice[0].handle);
+    try testing.expectEqual(@as(u32, 1), resolved_slice[1].index);
+    try testing.expectEqual(@as(std.posix.fd_t, 84), resolved_slice[1].handle);
+
+    var enc3 = try Encoder.encode(allocator, Value.GUFd.new(5));
+    defer enc3.deinit();
+    var dec3 = Decoder.initWithFds(allocator, enc3.body(), enc3.signature(), .little, &mock_fds);
+    try testing.expectError(error.MissingUnixFds, dec3.decode(Value.ResolvedFd));
 }

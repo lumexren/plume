@@ -6,8 +6,8 @@ const GStr = plume.Value.GStr;
 
 const MyInterface = struct {
     conn: *Connection,
-    ThisIsAProps: plume.Property(i32, .ReadWrite) = plume.property(i32, .ReadWrite, 43),
-    thisIsAsignal: plume.Signal(GStr) = signal("thisIsAsignal", GStr),
+    ThisIsAProps: plume.Property(i32, .ReadWrite) = .init(43),
+    thisIsAsignal: plume.Signal(GStr) = .init("thisIsAsignal"),
 
     pub const INTERFACE_NAME = "dev.myinterface.test";
 

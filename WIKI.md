@@ -110,7 +110,11 @@ pub fn main(init: std.process.Init) !void {
 | `addMatch(match_rule: [:0]const u8) !void` | Adds a D-Bus routing match rule (e.g. `type='signal',interface='...'`). |
 | `registerSignalHandler(iface, member, callback, ctx) !void` | Registers a callback for matching signals. |
 | `methodCall(dest, path, iface, member, signature?, body) !Message` | Performs a synchronous method call and returns a reply `Message`. |
-| `freeMessage(message: *Message) void` | Frees a message buffer allocated by the connection. |
+| `methodCallWithFds(dest, path, iface, member, signature?, body, fds) !Message` | Performs a synchronous method call passing file descriptors. |
+| `sendReply(m, encoder) !void` | Sends a reply to a method call. |
+| `sendReplyWithFds(m, encoder, fds) !void` | Sends a reply to a method call passing file descriptors. |
+| `sendError(m, error_name, error_msg) !void` | Sends an error reply to a method call. |
+| `freeMessage(message: *Message) void` | Frees a message buffer and closes untaken attached file descriptors. |
 | `getFd() i32` | Returns the underlying socket file descriptor (useful in `.poll` backend). |
 | `pollDispatch() !bool` | Reads and dispatches pending messages without background threads. |
 
@@ -136,7 +140,8 @@ pub fn main(init: std.process.Init) !void {
 | `GStr` (`[:0]const u8`) | STRING | `s` |
 | `GPath` | OBJECT_PATH | `o` |
 | `GSig` | SIGNATURE | `g` |
-| `GUFd` (`posix.fd_t`) | UNIX_FD | `h` |
+| `GUFd` (`u32`) | UNIX_FD | `h` |
+| `ResolvedFd` | UNIX_FD (Resolved OS FD) | `h` |
 | `[]const T` / `Value.Array(T)` | ARRAY | `a...` |
 | `struct { ... }` / `@Tuple(...)` | STRUCT | `(...)` |
 | `std.StringHashMap(V)` | DICT | `a{sv}` / `a{s...}` |
@@ -149,7 +154,8 @@ Located in `plume.Value`:
 - **`GStr`**: D-Bus string wrapper. Use `GStr.new("hello")`.
 - **`GPath`**: D-Bus object path wrapper. Use `GPath.new("/org/example/Path")`.
 - **`GSig`**: D-Bus type signature wrapper. Use `GSig.new("s")`.
-- **`GUFd`**: Unix file descriptor wrapper. Use `GUFd.new(fd)`.
+- **`GUFd`**: Unix file descriptor index wrapper. Use `GUFd.new(index)`.
+- **`ResolvedFd`**: Resolved OS file descriptor (`.handle`) and D-Bus wire index (`.index`). Call `duplicate()` to obtain an independent `O_CLOEXEC` descriptor that outlives the method call.
 - **`GVariant`**: Tagged union capable of holding arbitrary D-Bus primitive and container variants.
 
 ### Encoder & Decoder
@@ -181,20 +187,24 @@ const res = try msg_dec.decode(GStr);
 
 ### Properties & Signals
 
-Define properties and signals in service structs using `plume.property` and `plume.signal`:
+Define properties and signals in service structs using `.init(...)` or helper functions:
 
 ```zig
-// Read-write property of type i32 with initial value 42
-var count = plume.property(i32, .ReadWrite, 42);
+const MyService = struct {
+    conn: *Connection,
 
-// Read-only property
-var version = plume.property(plume.Value.GStr, .Read, plume.Value.GStr.new("1.0.0"));
+    // Read-write property of type i32 with initial value 42
+    count: plume.Property(i32, .ReadWrite) = .init(42),
 
-// Signal definition with payload type GStr
-var updated_signal = plume.signal("Updated", plume.Value.GStr);
+    // Read-only property
+    version: plume.Property(plume.Value.GStr, .Read) = .init(plume.Value.GStr.new("1.0.0")),
+
+    // Signal definition with payload type GStr
+    updated_signal: plume.Signal(plume.Value.GStr) = .init("Updated"),
+};
 
 // Triggering a signal from a service:
-try updated_signal.trigger(conn, plume.Value.GStr.new("data"));
+try self.updated_signal.trigger(self.conn, plume.Value.GStr.new("data"));
 ```
 
 ---
@@ -211,6 +221,9 @@ Any Zig struct can be exported as a full-featured D-Bus object:
 
 `plume` automatically handles:
 - Routing incoming method calls by name.
+- Automatic parameter injection: methods can optionally accept `*Connection` and/or `Message` / `*const Message` parameters (e.g. `pub fn MyMethod(self: *MyService, msg: plume.Message, x: i32) !void`). Injected parameters are omitted from the introspection XML and signature verification.
+- Error handling: any error returned from an exported method is automatically converted to an `org.freedesktop.DBus.Error.Failed` reply.
+- Memory management: slices passed as arguments are automatically cleaned up when the method invocation finishes.
 - Standard `org.freedesktop.DBus.Properties` interface (`Get`, `Set`, `GetAll`).
 - Standard `org.freedesktop.DBus.Introspectable` XML generation.
 

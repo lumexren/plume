@@ -61,6 +61,7 @@ pub fn build(b: *Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("test-app", "Run the test app");
     run_step.dependOn(&run_cmd.step);
@@ -81,6 +82,7 @@ pub fn build(b: *Build) void {
 
     const run_plgd_cmd = b.addRunArtifact(playground_exe);
     run_plgd_cmd.step.dependOn(b.getInstallStep());
+    run_plgd_cmd.addPassthruArgs();
 
     const run_plgd_step = b.step("playground", "Run the playground test file");
     run_plgd_step.dependOn(&run_plgd_cmd.step);
@@ -100,6 +102,7 @@ pub fn build(b: *Build) void {
     server_exe.lto = lto;
 
     const run_server = b.addRunArtifact(server_exe);
+    run_server.addPassthruArgs();
     const server_step = b.step("test-server", "Run the server test app");
     server_step.dependOn(&run_server.step);
 
@@ -118,6 +121,7 @@ pub fn build(b: *Build) void {
     client_exe.lto = lto;
 
     const run_client = b.addRunArtifact(client_exe);
+    run_client.addPassthruArgs();
     const client_step = b.step("test-client", "Run the client test app");
     client_step.dependOn(&run_client.step);
 
@@ -136,8 +140,28 @@ pub fn build(b: *Build) void {
     concurrency_exe.lto = lto;
 
     const run_concurrency = b.addRunArtifact(concurrency_exe);
+    run_concurrency.addPassthruArgs();
     const concurrency_step = b.step("test-concurrency", "Run concurrency and lifecycle tests");
     concurrency_step.dependOn(&run_concurrency.step);
+
+    const fd_exe = b.addExecutable(.{
+        .name = "plume-unix-fd-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/unix_fd_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "plume", .module = mod },
+            },
+        }),
+    });
+
+    fd_exe.lto = lto;
+
+    const run_fd = b.addRunArtifact(fd_exe);
+    run_fd.addPassthruArgs();
+    const fd_step = b.step("test-fd", "Run UNIX file descriptor passing tests");
+    fd_step.dependOn(&run_fd.step);
 
     const intro_exe = b.addExecutable(.{
         .name = "plume-introspection",
@@ -156,6 +180,7 @@ pub fn build(b: *Build) void {
     b.installArtifact(intro_exe);
 
     const run_intro = b.addRunArtifact(intro_exe);
+    run_intro.addPassthruArgs();
     const intro_step = b.step("introspection", "Run the introspection demo");
     intro_step.dependOn(&run_intro.step);
 
@@ -176,6 +201,7 @@ pub fn build(b: *Build) void {
     b.installArtifact(gen_exe);
 
     const run_gen = b.addRunArtifact(gen_exe);
+    run_gen.addPassthruArgs();
     const gen_step = b.step("generate", "Generate Zig proxy from D-Bus introspection");
     gen_step.dependOn(&run_gen.step);
 
@@ -195,6 +221,7 @@ pub fn build(b: *Build) void {
     check_step.dependOn(&server_exe.step);
     check_step.dependOn(&client_exe.step);
     check_step.dependOn(&concurrency_exe.step);
+    check_step.dependOn(&fd_exe.step);
     check_step.dependOn(&intro_exe.step);
     check_step.dependOn(&gen_exe.step);
     check_step.dependOn(&lib.step);

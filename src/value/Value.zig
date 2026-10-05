@@ -28,6 +28,7 @@ pub const GPath = Wrappers.GPath;
 pub const GSig = Wrappers.GSig;
 pub const GStr = Wrappers.GStr;
 pub const GUFd = Wrappers.GUFd;
+pub const ResolvedFd = Wrappers.ResolvedFd;
 pub const GVariant = Wrappers.GVariant;
 pub const GVariantTag = Wrappers.GVariantTag;
 
@@ -38,7 +39,7 @@ const math = std.math;
 pub fn dbusAlignOf(comptime T: type) usize {
     if (T == GStr or T == GPath) return 4; // 's','o'
     if (T == GSig) return 1; // 'g'
-    if (T == GUFd) return 4; // 'h'
+    if (T == GUFd or T == ResolvedFd) return 4; // 'h'
     if (T == GVariant) return 1; // 'v'
     if (comptime Value.isDict(T)) return 4; // 'a'
 
@@ -118,7 +119,7 @@ pub fn reprLength(comptime T: type) comptime_int {
         },
         else => {},
     }
-    if (T == GStr or T == GPath or T == GSig or T == GUFd or T == GVariant) return 1;
+    if (T == GStr or T == GPath or T == GSig or T == GUFd or T == ResolvedFd or T == GVariant) return 1;
     if (comptime isDict(T)) {
         const kv = dictKV(T);
         return 3 + dictKeyReprLen(kv.key) + reprLength(kv.val);
@@ -176,7 +177,7 @@ pub fn getRepr(comptime T: type, len: comptime_int, start: comptime_int, xs: *[l
     } else if (T == GSig) {
         xs[real_start] = 'g';
         return;
-    } else if (T == GUFd) {
+    } else if (T == GUFd or T == ResolvedFd) {
         xs[real_start] = 'h';
         return;
     } else if (T == GVariant) {
@@ -662,4 +663,24 @@ test "Signature Generation test" {
     var int_repr_buf: [10]u8 = undefined;
     Value.getRepr(IntMapT, int_repr_len, 0, int_repr_buf[0..int_repr_len]);
     try testing.expect(eql(u8, int_repr_buf[0..int_repr_len], "a{us}"));
+}
+
+test "ResolvedFd signature and alignment" {
+    const testing = std.testing;
+    const eql = std.mem.eql;
+    try testing.expect(dbusAlignOf(ResolvedFd) == 4);
+    try testing.expect(Value.reprLength(ResolvedFd) == 1);
+    var repr_buf: [10]u8 = undefined;
+    Value.getRepr(ResolvedFd, 1, 0, repr_buf[0..1]);
+    try testing.expect(eql(u8, repr_buf[0..1], "h"));
+
+    try testing.expect(dbusAlignOf([]const ResolvedFd) == 4);
+    try testing.expect(Value.reprLength([]const ResolvedFd) == 2);
+    Value.getRepr([]const ResolvedFd, 2, 0, repr_buf[0..2]);
+    try testing.expect(eql(u8, repr_buf[0..2], "ah"));
+
+    try testing.expect(dbusAlignOf([]ResolvedFd) == 4);
+    try testing.expect(Value.reprLength([]ResolvedFd) == 2);
+    Value.getRepr([]ResolvedFd, 2, 0, repr_buf[0..2]);
+    try testing.expect(eql(u8, repr_buf[0..2], "ah"));
 }

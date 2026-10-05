@@ -21,5 +21,6 @@ pub const GPath = @import("GPath.zig");
 pub const GSig = @import("GSig.zig");
 pub const GStr = @import("GStr.zig");
 pub const GUFd = @import("GUFd.zig");
+pub const ResolvedFd = @import("ResolvedFd.zig");
 pub const GVariant = @import("GVariant.zig").GVariant;
 pub const GVariantTag = @import("GVariant.zig").GVariantTag;

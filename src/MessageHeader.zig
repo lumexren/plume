@@ -304,6 +304,54 @@ pub fn pack(this: MessageHeader, allocator: Allocator) !std.ArrayList(u8) {
     return buf;
 }
 
+pub fn getSender(this: MessageHeader) ?[:0]const u8 {
+    for (this.header_fields) |hf| {
+        if (hf.code == .Sender) {
+            return switch (hf.value) {
+                .Sender => |s| s,
+                else => null,
+            };
+        }
+    }
+    return null;
+}
+
+pub fn getPath(this: MessageHeader) ?[:0]const u8 {
+    for (this.header_fields) |hf| {
+        if (hf.code == .Path) {
+            return switch (hf.value) {
+                .Path => |p| p,
+                else => null,
+            };
+        }
+    }
+    return null;
+}
+
+pub fn getInterface(this: MessageHeader) ?[:0]const u8 {
+    for (this.header_fields) |hf| {
+        if (hf.code == .Interface) {
+            return switch (hf.value) {
+                .Interface => |i| i,
+                else => null,
+            };
+        }
+    }
+    return null;
+}
+
+pub fn getMember(this: MessageHeader) ?[:0]const u8 {
+    for (this.header_fields) |hf| {
+        if (hf.code == .Member) {
+            return switch (hf.value) {
+                .Member => |m| m,
+                else => null,
+            };
+        }
+    }
+    return null;
+}
+
 // Write the header-field VARIANT ("v") given our union value.
 // This function writes:
 //   1) the 'g' (signature of the contained type)
@@ -358,4 +406,29 @@ fn serHeaderFieldVariant(hfv: HeaderFieldValue, w: *DBusWriter) !void {
             try Value.Uint32().new(u).ser(w);
         },
     }
+}
+
+test "MessageHeader getters" {
+    const testing = std.testing;
+
+    const fields = [_]HeaderField{
+        .{ .code = .Sender, .value = .{ .Sender = ":1.42" } },
+        .{ .code = .Path, .value = .{ .Path = "/test/path" } },
+        .{ .code = .Interface, .value = .{ .Interface = "org.test.Iface" } },
+        .{ .code = .Member, .value = .{ .Member = "TestMethod" } },
+    };
+
+    const header = MessageHeader{
+        .message_type = .MethodCall,
+        .flags = 0,
+        .proto_version = 1,
+        .body_length = 0,
+        .serial = 1,
+        .header_fields = &fields,
+    };
+
+    try testing.expectEqualStrings(":1.42", header.getSender().?);
+    try testing.expectEqualStrings("/test/path", header.getPath().?);
+    try testing.expectEqualStrings("org.test.Iface", header.getInterface().?);
+    try testing.expectEqualStrings("TestMethod", header.getMember().?);
 }

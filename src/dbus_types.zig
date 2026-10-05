@@ -34,7 +34,12 @@ pub fn Signal(comptime T: type) type {
         path: ?[:0]const u8 = null,
         // Marker to identify this struct
         pub const __is_plume_signal = true;
+        pub const __is_goose_signal = true;
         pub const PayloadType = T;
+
+        pub fn init(name: [:0]const u8) @This() {
+            return .{ .name = name };
+        }
 
         /// Triggers a signal.
         /// `conn`: The connection to send the signal on.
@@ -81,8 +86,13 @@ pub fn Property(comptime T: type, comptime access_mode: Access) type {
     return struct {
         value: T,
         pub const __is_plume_property = true;
+        pub const __is_goose_property = true;
         pub const DataType = T;
         pub const AccessMode = access_mode;
+
+        pub fn init(value: T) @This() {
+            return .{ .value = value };
+        }
     };
 }
 
