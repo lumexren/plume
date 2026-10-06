@@ -58,20 +58,10 @@ jobs:
 
       - name: Generate Changelog
         run: |
-          PREVIOUS_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")"
-
-          if [[ -z "$PREVIOUS_TAG" ]]; then
-            echo "Initial release." > release_notes.md
-          else
-            echo "### Changes since $PREVIOUS_TAG" > release_notes.md
-            git log "${PREVIOUS_TAG}..HEAD" --oneline --format="- %s (%h)" >> release_notes.md
-          fi
-
-          if [[ -f .zigversion ]]; then
-            ZIG_VERSION=$(cat .zigversion | xargs)
-            ZIG_COMPILER_VERSION=$(zig version)
-            echo -e "\n\n<sub>This release is based on $ZIG_VERSION</sub>\n<sub>Compiled with $ZIG_COMPILER_VERSION</sub>" >> release_notes.md
-          fi
+          bash .forgejo/scripts/generate-changelog.sh \
+            --mode stable \
+            --version "${{ steps.version.outputs.version }}" \
+            --output release_notes.md
 
       - name: Create Release
         uses: https://gitea.com/actions/gitea-release-action@v1
