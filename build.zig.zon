@@ -1,7 +1,7 @@
 .{
     .name = .plume,
     .fingerprint = 0xf1b175efe46cab2b,
-    .version = "2.0.0",
+    .version = "3.0.0",
     .minimum_zig_version = "0.18.0-dev.4+5a23bf4b2",
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "LICENSE.goose", "README.md" },
 }
