@@ -36,6 +36,7 @@ const SignalHandler = @import("SignalHandler.zig");
 const Value = @import("value/Value.zig");
 const DBusWriter = Value.DBusWriter;
 const Encoder = @import("Encoder.zig");
+const SocketReader = @import("SocketReader.zig");
 
 const xml_generator = @import("xml_generator.zig");
 const dispatcher = @import("dispatcher.zig");
@@ -132,7 +133,6 @@ pub const BusType = enum {
     /// The accessibility bus (AT-SPI).
     Accessibility,
 };
-pub const SocketReader = @import("SocketReader.zig");
 
 backend: Backend = .threaded,
 supports_unix_fd: bool = false,
@@ -399,7 +399,7 @@ pub fn initWithBackend(io: Io, allocator: Allocator, bus_type: BusType, vars: *M
         .serve_futex = .init(0),
         .signal_handlers = try .initCapacity(allocator, 0),
         .registered_interfaces = try .initCapacity(allocator, 0),
-        .reader = try SocketReader.init(socket.socket.handle, allocator, io, reader_buf),
+        .reader = try .init(socket.socket.handle, allocator, io, reader_buf),
     };
 
     try connection.auth();
@@ -550,7 +550,7 @@ pub fn sendMessage(this: *Connection, message: Message) !void {
             }
         }
         if (!has_unix_fds) {
-            var fields = try ArrayList(MessageHeaderField).initCapacity(this.allocator, message.header.header_fields.len + 1);
+            var fields: ArrayList(MessageHeaderField) = try .initCapacity(this.allocator, message.header.header_fields.len + 1);
             try fields.appendSlice(this.allocator, message.header.header_fields);
             try fields.append(this.allocator, .{ .code = .UnixFds, .value = .{ .UnixFds = @intCast(message.fds.len) } });
             msg_to_pack.header.header_fields = fields.items;
