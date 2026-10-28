@@ -656,7 +656,7 @@ pub fn sendReply(this: *Connection, m: Message, encoder: Encoder) !void {
         .header_fields = reply_fields.items,
     };
 
-    try this.sendMessage(Message.new(reply_h, encoder.body()));
+    try this.sendMessage(.new(reply_h, encoder.body()));
 }
 
 /// Sends a reply to a method call passing file descriptors.
@@ -707,7 +707,7 @@ pub fn sendReplyWithFds(this: *Connection, m: Message, encoder: Encoder, fds: []
         .header_fields = reply_fields.items,
     };
 
-    try this.sendMessage(Message.newWithFds(reply_h, encoder.body(), fds));
+    try this.sendMessage(.newWithFds(reply_h, encoder.body(), fds));
 }
 
 /// Sends an Error reply to a message.
@@ -758,7 +758,7 @@ pub fn sendError(this: *Connection, m: Message, error_name: [:0]const u8, error_
         .header_fields = reply_fields.items,
     };
 
-    try this.sendMessage(Message.new(reply_h, encoder.body()));
+    try this.sendMessage(.new(reply_h, encoder.body()));
 }
 
 pub fn ensureWorkersStarted(this: *Connection) !void {
