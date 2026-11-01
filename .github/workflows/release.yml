@@ -1,4 +1,4 @@
-name: Staging Release
+name: Release
 
 permissions:
   contents: write
@@ -8,7 +8,7 @@ on:
 
 jobs:
   release:
-    runs-on: [codeberg-medium]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Zig
-        uses: https://codeberg.org/mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@v2
         with:
           version-file: .zigversion
 
@@ -26,21 +26,11 @@ jobs:
       - name: Set Version
         id: version
         run: |
-          BASE_VERSION=$(grep -oP '\.version\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' build.zig.zon)
-          if [ -z "$BASE_VERSION" ]; then
-            echo "Error: Base version not found in build.zig.zon"
+          VERSION=$(grep -oP '\.version\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' build.zig.zon)
+          if [ -z "$VERSION" ]; then
+            echo "Error: Version not found in build.zig.zon"
             exit 1
           fi
-
-          LAST_STABLE_TAG=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' | grep -v '-' | sort -V | tail -n1 || true)
-
-          if [ -n "$LAST_STABLE_TAG" ]; then
-            COMMITS=$(git rev-list --count "${LAST_STABLE_TAG}"..HEAD)
-          else
-            COMMITS=$(git rev-list --count HEAD)
-          fi
-
-          VERSION="${BASE_VERSION}-staging.${COMMITS}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Create and Push Git Tag
@@ -50,13 +40,13 @@ jobs:
         run: |
           sed -i "s/\.version = \"[^\"]*\"/\.version = \"${VERSION}\"/" build.zig.zon
 
-          git config user.name "erenvly"
-          git config user.email "${EMAIL}"
-          git remote set-url origin "https://x-access-token:${{ github.token }}@codeberg.org/${{ github.repository }}.git"
+          git config user.name "lumexren"
+          git config user.email "${EMAIL:-lumexren@users.noreply.github.com}"
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
 
           if ! git diff --quiet build.zig.zon; then
-            git commit -am "chore(release): bump version to ${VERSION} [skip ci]"
-            git push origin "${{ github.ref_name }}"
+            git commit -am "chore(release): release ${VERSION} [skip ci]"
+            git push origin "${GITHUB_REF_NAME}"
           fi
 
           if git rev-parse "$VERSION" >/dev/null 2>&1; then
@@ -71,7 +61,7 @@ jobs:
           PREVIOUS_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")"
 
           if [[ -z "$PREVIOUS_TAG" ]]; then
-            echo "Initial staging release." > release_notes.md
+            echo "Initial release." > release_notes.md
           else
             echo "### Changes since $PREVIOUS_TAG" > release_notes.md
             git log "${PREVIOUS_TAG}..HEAD" --oneline --format="- %s (%h)" >> release_notes.md
@@ -84,9 +74,9 @@ jobs:
           fi
 
       - name: Create Release
-        uses: https://gitea.com/actions/gitea-release-action@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
           body_path: release_notes.md
-          prerelease: true
+          prerelease: false

@@ -1,8 +1,8 @@
 ![plume](https://img.shields.io/badge/plume-gray?style=for-the-badge&logo=zig&logoColor=orange)
 ![License](https://img.shields.io/badge/License-GPL--3.0-orange?style=for-the-badge)
-![Stars](https://img.shields.io/gitea/stars/erenvly/plume?gitea_url=https%3A%2F%2Fcodeberg.org&style=for-the-badge&color=DAA520)
-![Issues](https://img.shields.io/gitea/issues/open/erenvly/plume?gitea_url=https%3A%2F%2Fcodeberg.org&style=for-the-badge)
-![Last Commit](https://img.shields.io/gitea/last-commit/erenvly/plume?gitea_url=https%3A%2F%2Fcodeberg.org&style=for-the-badge&color=F7A41D)
+![Stars](https://img.shields.io/github/stars/lumexren/plume?style=for-the-badge&color=DAA520)
+![Issues](https://img.shields.io/github/issues/lumexren/plume?style=for-the-badge)
+![Last Commit](https://img.shields.io/github/last-commit/lumexren/plume?style=for-the-badge&color=F7A41D)
 
 A pure-Zig library providing a native, zero-C-dependency implementation of the D-Bus protocol.
 
@@ -11,7 +11,7 @@ A pure-Zig library providing a native, zero-C-dependency implementation of the D
 Add `plume` to your project using `zig fetch`:
 
 ```bash
-zig fetch --save https://codeberg.org/erenvly/plume/archive/0.17.x.zip
+zig fetch --save https://github.com/lumexren/plume/archive/0.17.x.tar.gz
 ```
 
 Then in your `build.zig`:
@@ -41,7 +41,7 @@ More examples are available in [`tests/main.zig`](tests/main.zig), [`tests/concu
 
 <div align="center">
 
-**Built with ❤️ by erenvly**<br>
+**Built with ❤️ by lumexren**<br>
 <sup>forked from <a href="https://github.com/luxluth/goose" target="_blank">luxluth/goose</a></sup>
 
 *Star ⭐ this repo if you find it useful!*<br>
