@@ -1,0 +1,92 @@
+name: Staging Release
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version-file: .zigversion
+
+      - name: Run Tests
+        run: zig build test
+
+      - name: Set Version
+        id: version
+        run: |
+          BASE_VERSION=$(grep -oP '\.version\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' build.zig.zon)
+          if [ -z "$BASE_VERSION" ]; then
+            echo "Error: Base version not found in build.zig.zon"
+            exit 1
+          fi
+
+          LAST_STABLE_TAG=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' | grep -v '-' | sort -V | tail -n1 || true)
+
+          if [ -n "$LAST_STABLE_TAG" ]; then
+            COMMITS=$(git rev-list --count "${LAST_STABLE_TAG}"..HEAD)
+          else
+            COMMITS=$(git rev-list --count HEAD)
+          fi
+
+          VERSION="${BASE_VERSION}-staging.${COMMITS}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and Push Git Tag
+        env:
+          EMAIL: ${{ secrets.EMAIL }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed -i "s/\.version = \"[^\"]*\"/\.version = \"${VERSION}\"/" build.zig.zon
+
+          git config user.name "lumexren"
+          git config user.email "${EMAIL:-lumexren@users.noreply.github.com}"
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+          if ! git diff --quiet build.zig.zon; then
+            git commit -am "chore(release): bump version to ${VERSION} [skip ci]"
+            git push origin "${{ github.ref_name }}"
+          fi
+
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists, skipping."
+          else
+            git tag "$VERSION"
+            git push origin "$VERSION"
+          fi
+
+      - name: Generate Changelog
+        run: |
+          PREVIOUS_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")"
+
+          if [[ -z "$PREVIOUS_TAG" ]]; then
+            echo "Initial staging release." > release_notes.md
+          else
+            echo "### Changes since $PREVIOUS_TAG" > release_notes.md
+            git log "${PREVIOUS_TAG}..HEAD" --oneline --format="- %s (%h)" >> release_notes.md
+          fi
+
+          if [[ -f .zigversion ]]; then
+            ZIG_VERSION=$(cat .zigversion | xargs)
+            ZIG_COMPILER_VERSION=$(zig version)
+            echo -e "\n\n<sub>This release is based on $ZIG_VERSION</sub>\n<sub>Compiled with $ZIG_COMPILER_VERSION</sub>" >> release_notes.md
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          prerelease: true
